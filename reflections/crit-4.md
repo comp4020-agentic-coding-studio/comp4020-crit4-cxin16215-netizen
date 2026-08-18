@@ -2,29 +2,30 @@
 
 ## The breakthrough
 
-It came from an obstacle. Browsers refuse to start audio before a user gesture,
-which I first read as a problem to work around: the page would have to be silent
-on arrival, so how could the opening screen invite a sound?
+The turning point was when I stopped treating browser audio-gating as a bug.
 
-Then I stopped fighting it. If nothing can sound before the first touch, let the
-sky *arrive* silent and still — the real Southern Cross, holding its catalogue
-shape, looking like a place rather than an empty canvas. The first touch then
-does two things at once: every star already up there speaks, and the whole
-constellation comes loose and begins to drift. You don't light the sky so much as
-unmoor it.
+At first I framed it as a limitation: no sound can start before a user gesture,
+so the page arrives silent, which felt like a UX problem. After a couple of
+iterations, I flipped it: silence is the opening move.
 
-That reframing fixed the discoverability problem I'd been circling for two
-attempts. Nothing needs explaining, because the only thing you can do is the
-thing that works.
+So the sky now opens as a still Southern Cross, and first touch becomes a clear
+event with meaning: it wakes all voices and unmoors the constellation at once.
+That solved discoverability better than extra instructions would have, because
+the first interaction naturally demonstrates how to play.
 
 ## What it changed
 
-I came in treating a green check as the finish line. This week the suite was
-green while the instrument was, in turn, unlistenable, then silently broken in
-two senses at once. A passing suite is only a claim about what I thought to ask.
+This week pushed me to separate "green checks" from "good artefact".
 
-So the habit I want is narrower and more useful than "write tests": when I add a
-sensor, break the thing it watches first and prove it goes red. I did that with
-the link-preview check — deleted the card, watched three tests fail, put it back.
-And when no sensor is possible, say so out loud instead of letting silence read
-as safety. Judgement is the part I can't delegate.
+I had moments where everything passed, but the result was still wrong in ways
+only listening and direct interaction could reveal. So my workflow shifted from
+"run checks and trust the outcome" to "run checks, then deliberately challenge
+the parts checks can't hear or see."
+
+Practically, that means two habits I want to keep:
+- when a sensor exists, sabotage the target once and confirm it actually fails;
+- when a sensor can't exist yet (e.g. tone quality, interaction feel), document
+  that gap explicitly and validate it in-browser on purpose.
+
+The main change in me is this: I’m using the agent for speed, but I’m taking
+more ownership of taste and judgement, especially on audio/visual decisions.

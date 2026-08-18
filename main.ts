@@ -525,12 +525,70 @@ function seedBackground(width: number, height: number): void {
   ];
 }
 
+// How much of the sky is laid back down each frame. Below 1 it leaves a decaying
+// trace of where each star has been, which is what draws the drift as a tail.
+const TRAIL_ALPHA = calmMotion ? 1 : 0.26;
+
+/**
+ * The sky gradient and its nebulae never move --- they are rebuilt only when the
+ * viewport changes --- yet they were being re-evaluated every frame, because the
+ * partial-alpha repaint that leaves star trails fades them along with everything
+ * else. Four full-screen gradient fills per frame is most of the budget on a
+ * phone: 390x844 at devicePixelRatio 3 is three million pixels, so that was
+ * around twelve million gradient-shaded pixels every frame, for an image that
+ * hadn't changed. Baking it once turns those four fills into one `drawImage`.
+ *
+ * The trap in doing this is that the two are not the same composite. The
+ * nebulae were added with `lighter` at *full* strength every frame while only
+ * `TRAIL_ALPHA` of the sky went down, so they converged on `sky + N/TRAIL_ALPHA`
+ * --- nearly four times their nominal alpha. A baked layer blitted at
+ * `TRAIL_ALPHA` converges on itself instead, so the nebulae have to be baked
+ * pre-multiplied by `1/TRAIL_ALPHA` to land on the same steady state.
+ *
+ * Checked by sampling the same patches of sky before and after rather than by
+ * eye: every channel lands within 3/255, the baked version fractionally darker
+ * everywhere --- including where there is no nebula at all, so that residue is
+ * repeated 8-bit blending rounding down, not the pre-multiply being wrong.
+ * Measured 24 to 60fps at 1920x1080 and 16 to 37 at 390x844 (headless software
+ * rendering, so treat the ratio as the result and not the absolute numbers).
+ */
+let backdrop: HTMLCanvasElement | null = null;
+
+function bakeBackdrop(width: number, height: number): void {
+  backdrop ??= document.createElement("canvas");
+  backdrop.width = Math.max(1, Math.round(width * devicePixelRatio));
+  backdrop.height = Math.max(1, Math.round(height * devicePixelRatio));
+  const bg = backdrop.getContext("2d");
+  if (!bg) return;
+  bg.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+
+  const sky = bg.createLinearGradient(0, 0, width * 0.3, height);
+  sky.addColorStop(0, "#070a1d");
+  sky.addColorStop(0.55, "#0a0b22");
+  sky.addColorStop(1, "#04050f");
+  bg.fillStyle = sky;
+  bg.fillRect(0, 0, width, height);
+
+  const boost = 1 / TRAIL_ALPHA;
+  bg.globalCompositeOperation = "lighter";
+  for (const cloud of nebulae) {
+    const glow = bg.createRadialGradient(cloud.x, cloud.y, 0, cloud.x, cloud.y, cloud.r);
+    glow.addColorStop(0, `hsla(${cloud.hue}, 70%, 42%, ${Math.min(1, 0.085 * boost)})`);
+    glow.addColorStop(0.6, `hsla(${cloud.hue}, 70%, 30%, ${Math.min(1, 0.03 * boost)})`);
+    glow.addColorStop(1, "hsla(0, 0%, 0%, 0)");
+    bg.fillStyle = glow;
+    bg.fillRect(0, 0, width, height);
+  }
+  bg.globalCompositeOperation = "source-over";
+}
+
 function resize(): void {
   const width = canvas!.clientWidth;
   const height = canvas!.clientHeight;
   canvas!.width = width * devicePixelRatio;
   canvas!.height = height * devicePixelRatio;
   seedBackground(width, height);
+  bakeBackdrop(width, height);
 }
 window.addEventListener("resize", resize);
 
@@ -667,28 +725,17 @@ function step(width: number, height: number, dt: number): void {
 // --- drawing ---------------------------------------------------------------
 
 function paintSky(width: number, height: number, elapsed: number): void {
-  // Repainting the gradient at partial alpha instead of clearing leaves a
-  // decaying trace of where each star has been --- the drift becomes visible
-  // as a tail rather than having to be inferred frame to frame.
-  const sky = ctx!.createLinearGradient(0, 0, width * 0.3, height);
-  sky.addColorStop(0, "#070a1d");
-  sky.addColorStop(0.55, "#0a0b22");
-  sky.addColorStop(1, "#04050f");
-  ctx!.globalAlpha = calmMotion ? 1 : 0.26;
-  ctx!.fillStyle = sky;
-  ctx!.fillRect(0, 0, width, height);
+  // Laying the baked sky back down at partial alpha instead of clearing leaves a
+  // decaying trace of where each star has been --- the drift becomes visible as a
+  // tail rather than having to be inferred frame to frame.
+  if (!backdrop) return;
+  ctx!.globalAlpha = TRAIL_ALPHA;
+  ctx!.drawImage(backdrop, 0, 0, width, height);
   ctx!.globalAlpha = 1;
 
+  // The specks twinkle, so they are the one part of the background that has to
+  // stay live. A few hundred small arcs is cheap next to a full-screen gradient.
   ctx!.globalCompositeOperation = "lighter";
-  for (const cloud of nebulae) {
-    const glow = ctx!.createRadialGradient(cloud.x, cloud.y, 0, cloud.x, cloud.y, cloud.r);
-    glow.addColorStop(0, `hsla(${cloud.hue}, 70%, 42%, 0.085)`);
-    glow.addColorStop(0.6, `hsla(${cloud.hue}, 70%, 30%, 0.03)`);
-    glow.addColorStop(1, "hsla(0, 0%, 0%, 0)");
-    ctx!.fillStyle = glow;
-    ctx!.fillRect(0, 0, width, height);
-  }
-
   for (const speck of specks) {
     const twinkle = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(elapsed * speck.rate + speck.phase));
     ctx!.globalAlpha = twinkle * 0.7;
