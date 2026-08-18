@@ -31,12 +31,14 @@
       <canvas
         id="sky"
         tabindex="0"
-        aria-label="A night sky you can play. Tap or drag anywhere to release a star that sounds a note; flick to send it drifting, and press the number keys 1 to 9 to place one without a pointer. Stars that pass close together harmonise, and ring when they touch."
+        aria-label="A night sky you can play, opening on the Southern Cross. Tap or drag anywhere to release a star that sounds a note; flick to send it drifting, and press the number keys 1 to 9 to place one without a pointer. Stars that pass close together harmonise, and ring when they touch."
       ></canvas>
       <p class="invite" id="invite">
         <span class="invite-line">touch the sky</span>
         <span class="invite-sub">drag to send a star drifting · or press 1–9</span>
       </p>
+      <h2 class="sr-only">The stars this sky opens on</h2>
+      <ul class="sr-only" id="catalogue"></ul>
     </main>
     <script type="module" src="./main.ts"></script>
   </body>

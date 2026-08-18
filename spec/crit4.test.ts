@@ -4,11 +4,16 @@ import { join, resolve } from "node:path";
 import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
 import {
+  CRUX,
+  MAX_SPEED,
   SCALE,
+  brightnessForMagnitude,
+  damping,
   degreeForHeight,
   harmonyDistance,
   hueForDegree,
   pitchForDegree,
+  projectConstellation,
   resonance,
 } from "../instrument.ts";
 
@@ -110,9 +115,109 @@ describe("crit 4 spec: the sky reads the same at both marked viewports", () => {
     expect(resonance(reach * 0.25, reach)).toBeGreaterThan(resonance(reach * 0.75, reach));
   });
 
+  it("damps a flick by the clock, not by the frame, so the feel survives a 144Hz display", () => {
+    // One second of drift, integrated at three refresh rates. A per-frame
+    // multiplier would leave the 144Hz star far slower than the 30Hz one.
+    const after = (fps: number): number => {
+      let speed = MAX_SPEED;
+      for (let i = 0; i < fps; i++) speed *= damping(1 / fps);
+      return speed;
+    };
+    expect(after(144)).toBeCloseTo(after(60), 4);
+    expect(after(30)).toBeCloseTo(after(60), 4);
+  });
+
+  it("lets a flung star keep most of its speed for several seconds", () => {
+    // The drift is most of what there is to watch, so it has to outlast the
+    // gesture by a good margin rather than stopping just after it.
+    expect(damping(1)).toBeGreaterThan(0.85);
+    expect(damping(5)).toBeGreaterThan(0.5);
+    // ...but it does have to settle eventually, or nothing ever comes to rest.
+    expect(damping(60)).toBeLessThan(0.01);
+  });
+
   it("gives every scale degree its own colour, so pitch is visible as well as audible", () => {
     const hues = SCALE.map((_, degree) => hueForDegree(degree));
     expect(new Set(hues).size).toBe(SCALE.length);
     for (let i = 1; i < hues.length; i++) expect(hues[i]!).toBeGreaterThan(hues[i - 1]!);
+  });
+});
+
+// The opening sky claims to be a real place. That claim is checkable, and if it
+// ever stops being true the page is lying to the room rather than merely
+// looking different.
+describe("crit 4: the sky it opens on is really the Southern Cross", () => {
+  it("names the five stars of Crux, no duplicates", () => {
+    expect(CRUX.map((s) => s.name)).toEqual(["Acrux", "Mimosa", "Gacrux", "Imai", "Ginan"]);
+    expect(new Set(CRUX.map((s) => s.name)).size).toBe(CRUX.length);
+  });
+
+  it("puts every one of them in the far southern sky, where Crux actually is", () => {
+    for (const star of CRUX) {
+      expect(star.ra, `${star.name} right ascension out of range`).toBeGreaterThanOrEqual(0);
+      expect(star.ra, `${star.name} right ascension out of range`).toBeLessThan(24);
+      // Crux spans roughly -57 to -64 degrees of declination.
+      expect(star.dec, `${star.name} is not in the southern sky`).toBeLessThan(-55);
+      expect(star.dec, `${star.name} is past the south celestial pole`).toBeGreaterThan(-70);
+    }
+  });
+
+  it("keeps the magnitudes ordered as they are in the sky", () => {
+    // Acrux is the brightest of the Cross; Ginan is the faintest of the five.
+    const brightest = CRUX.reduce((a, b) => (a.magnitude < b.magnitude ? a : b));
+    const faintest = CRUX.reduce((a, b) => (a.magnitude > b.magnitude ? a : b));
+    expect(brightest.name).toBe("Acrux");
+    expect(faintest.name).toBe("Ginan");
+    for (const star of CRUX) {
+      expect(star.magnitude, `${star.name} would be invisible to the eye`).toBeLessThan(4);
+    }
+  });
+
+  it("reads magnitude the right way round: a lower number draws a bigger star", () => {
+    expect(brightnessForMagnitude(0.77)).toBeGreaterThan(brightnessForMagnitude(3.59));
+    // Compressed, or the faint end of the Cross would not be visible at all.
+    expect(brightnessForMagnitude(3.59)).toBeGreaterThan(0.5);
+    expect(brightnessForMagnitude(0.77)).toBeLessThan(2);
+  });
+
+  it("fits the constellation on screen with a margin at both marked viewports", () => {
+    for (const [width, height] of [
+      [1920, 1080],
+      [390, 844],
+    ]) {
+      const placed = projectConstellation(CRUX, width!, height!);
+      for (const { star, x, y } of placed) {
+        expect(x, `${star.name} is off the left edge at ${width}x${height}`).toBeGreaterThan(0);
+        expect(x, `${star.name} is off the right edge at ${width}x${height}`).toBeLessThan(width!);
+        expect(y, `${star.name} is off the top at ${width}x${height}`).toBeGreaterThan(0);
+        expect(y, `${star.name} is off the bottom at ${width}x${height}`).toBeLessThan(height!);
+      }
+    }
+  });
+
+  it("holds the shape of the constellation rather than stretching it to the canvas", () => {
+    // Same scale on both axes means the ratio of any two distances survives the
+    // projection, so the Cross still looks like the Cross on a wide screen.
+    const skyRatio = (a: number, b: number, c: number, d: number): number => {
+      const first = CRUX[a]!;
+      const second = CRUX[b]!;
+      const third = CRUX[c]!;
+      const fourth = CRUX[d]!;
+      const squeeze = Math.cos((-60 * Math.PI) / 180);
+      const span = (p: typeof first, q: typeof first): number =>
+        Math.hypot((p.ra - q.ra) * 15 * squeeze, p.dec - q.dec);
+      return span(first, second) / span(third, fourth);
+    };
+    const screenRatio = (placed: ReturnType<typeof projectConstellation>): number =>
+      Math.hypot(placed[0]!.x - placed[2]!.x, placed[0]!.y - placed[2]!.y) /
+      Math.hypot(placed[3]!.x - placed[4]!.x, placed[3]!.y - placed[4]!.y);
+
+    for (const [width, height] of [
+      [1600, 900],
+      [390, 844],
+    ]) {
+      const placed = projectConstellation(CRUX, width!, height!);
+      expect(screenRatio(placed)).toBeCloseTo(skyRatio(0, 2, 3, 4), 1);
+    }
   });
 });

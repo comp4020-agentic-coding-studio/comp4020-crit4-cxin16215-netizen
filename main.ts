@@ -8,18 +8,23 @@
 
 import {
   COLLIDE_DIST,
-  FRICTION,
+  MAX_SPEED,
   SCALE,
+  CRUX,
+  brightnessForMagnitude,
+  damping,
   degreeForHeight,
   harmonyDistance,
   hueForDegree,
   pitchForDegree,
+  projectConstellation,
   radiusForDegree,
   resonance,
 } from "./instrument.ts";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#sky");
 const invite = document.querySelector<HTMLElement>("#invite");
+const catalogueList = document.querySelector<HTMLElement>("#catalogue");
 if (!canvas) throw new Error("missing #sky canvas");
 const ctx = canvas.getContext("2d");
 if (!ctx) throw new Error("2d context unavailable");
@@ -176,6 +181,8 @@ interface Star {
   baseFreq: number;
   hue: number;
   radius: number;
+  /** Named only for the real stars the sky opens on. */
+  name: string | null;
   twinkle: number;
   glow: number; // transient brightness, spent by a collision
   level: number; // 0..1 visual envelope, matches the audio fade
@@ -200,7 +207,19 @@ const ripples: Ripple[] = [];
 const MAX_STARS = 18;
 let awake = false;
 
-function makeStar(x: number, y: number, vx: number, vy: number, degree: number): Star {
+// The catalogue names label the opening sky and then get out of the way: they
+// are there to say "this is a real place", which is a thing you only need told
+// once, and they'd be clutter over a sky you're playing.
+let labelFade = 1;
+
+function makeStar(
+  x: number,
+  y: number,
+  vx: number,
+  vy: number,
+  degree: number,
+  real?: { name: string; magnitude: number },
+): Star {
   return {
     x,
     y,
@@ -209,7 +228,10 @@ function makeStar(x: number, y: number, vx: number, vy: number, degree: number):
     degree,
     baseFreq: pitchForDegree(degree),
     hue: hueForDegree(degree),
-    radius: radiusForDegree(degree),
+    // A real star's apparent brightness is its own; a placed one takes its size
+    // from its pitch, so low notes read as the heavier bodies.
+    radius: radiusForDegree(degree) * (real ? brightnessForMagnitude(real.magnitude) : 1),
+    name: real?.name ?? null,
     twinkle: Math.random() * Math.PI * 2,
     glow: 0,
     level: 0,
@@ -217,6 +239,14 @@ function makeStar(x: number, y: number, vx: number, vy: number, degree: number):
     lastChimeAt: 0,
     voice: null,
   };
+}
+
+function clampSpeed(star: Star): void {
+  const speed = Math.hypot(star.vx, star.vy);
+  if (speed <= MAX_SPEED) return;
+  const scale = MAX_SPEED / speed;
+  star.vx *= scale;
+  star.vy *= scale;
 }
 
 function retire(star: Star): void {
@@ -242,6 +272,7 @@ function dispose(star: Star): void {
 
 function spawn(x: number, y: number, vx: number, vy: number): void {
   const star = makeStar(x, y, vx, vy, degreeForHeight(y, canvas!.clientHeight));
+  clampSpeed(star);
   stars.push(star);
 
   const living = stars.filter((s) => !s.retiring);
@@ -308,14 +339,19 @@ window.addEventListener("resize", resize);
 // --- motion ----------------------------------------------------------------
 
 function step(width: number, height: number, dt: number): void {
+  const damp = damping(dt);
+  if (awake) labelFade = Math.max(0, labelFade - dt * 0.8);
+
   for (let i = stars.length - 1; i >= 0; i--) {
     const s = stars[i]!;
     const drift = calmMotion ? 0.35 : 1;
-    s.x += s.vx * drift;
-    s.y += s.vy * drift;
-    s.vx *= FRICTION;
-    s.vy *= FRICTION;
+    s.x += s.vx * dt * drift;
+    s.y += s.vy * dt * drift;
+    s.vx *= damp;
+    s.vy *= damp;
 
+    // Edges are elastic: a star loses nothing to a bounce, only to the air, so
+    // a hard flick keeps crossing the sky for a while.
     if (s.x < s.radius || s.x > width - s.radius) s.vx *= -1;
     if (s.y < s.radius || s.y > height - s.radius) s.vy *= -1;
     s.x = Math.min(Math.max(s.x, s.radius), width - s.radius);
@@ -363,14 +399,16 @@ function step(width: number, height: number, dt: number): void {
         b.y -= ny * overlap;
 
         const speed = Math.hypot(a.vx - b.vx, a.vy - b.vy);
-        const impulse = 0.35 + speed * 0.25;
+        const impulse = 22 + speed * 0.25;
         a.vx += nx * impulse;
         a.vy += ny * impulse;
         b.vx -= nx * impulse;
         b.vy -= ny * impulse;
+        clampSpeed(a);
+        clampSpeed(b);
 
         if (awake && now - a.lastChimeAt > 140 && now - b.lastChimeAt > 140) {
-          const strength = Math.min(1, speed / 6);
+          const strength = Math.min(1, speed / MAX_SPEED);
           pluck(a.baseFreq, strength);
           pluck(b.baseFreq, strength);
           a.lastChimeAt = now;
@@ -516,6 +554,22 @@ function paintStars(): void {
   ctx!.globalCompositeOperation = "source-over";
 }
 
+function paintLabels(width: number): void {
+  if (labelFade <= 0.01) return;
+  ctx!.font = "300 12px system-ui, sans-serif";
+  ctx!.textBaseline = "middle";
+  for (const s of stars) {
+    if (!s.name) continue;
+    // Labels flip to the inside of the sky near the right edge, so a name never
+    // runs off the canvas.
+    const flip = s.x > width * 0.78;
+    const offset = s.radius * 2.4 + 8;
+    ctx!.textAlign = flip ? "right" : "left";
+    ctx!.fillStyle = `hsla(${s.hue}, 60%, 88%, ${labelFade * 0.72 * Math.max(0.35, s.level)})`;
+    ctx!.fillText(s.name, flip ? s.x - offset : s.x + offset, s.y);
+  }
+}
+
 let last = performance.now();
 function frame(now: number): void {
   const dt = Math.min(0.05, (now - last) / 1000);
@@ -529,6 +583,7 @@ function frame(now: number): void {
   paintResonance(harmonyDistance(width, height));
   paintRipples();
   paintStars();
+  paintLabels(width);
   requestAnimationFrame(frame);
 }
 
@@ -555,12 +610,13 @@ canvas.addEventListener("pointerdown", (event) => {
 canvas.addEventListener("pointerup", (event) => {
   if (!drag) return;
   const { x, y } = localPoint(event);
-  const dt = Math.max(24, performance.now() - drag.t);
-  // A still tap leaves the star where it was put; a flick hands it the speed
-  // and direction of the gesture.
-  const vx = ((x - drag.x) / dt) * 14;
-  const vy = ((y - drag.y) / dt) * 14;
-  spawn(x, y, Math.max(-6, Math.min(6, vx)), Math.max(-6, Math.min(6, vy)));
+  const elapsed = Math.max(24, performance.now() - drag.t);
+  // A still tap leaves the star where it was put; a flick hands it the gesture's
+  // own speed and direction, in pixels per second, so the throw feels like the
+  // hand that made it.
+  const vx = ((x - drag.x) / elapsed) * 1000 * 0.8;
+  const vy = ((y - drag.y) / elapsed) * 1000 * 0.8;
+  spawn(x, y, vx, vy);
   drag = null;
 });
 
@@ -580,28 +636,44 @@ window.addEventListener("keydown", (event) => {
   const degree = typed - 1;
   const y = height - ((degree + 0.5) / SCALE.length) * height;
   const x = width * (0.2 + 0.6 * Math.random());
-  spawn(x, y, (Math.random() - 0.5) * 1.2, (Math.random() - 0.5) * 1.2);
+  spawn(x, y, (Math.random() - 0.5) * 80, (Math.random() - 0.5) * 80);
 });
 
 // --- opening state ---------------------------------------------------------
 
 resize();
 
-// A few stars are already adrift when the page loads, silent until the first
-// gesture. The sky reads as alive rather than empty, and there is something
-// to aim at before you know what tapping will do.
+// The sky opens on the real Southern Cross, already adrift and silent until the
+// first gesture. Two things fall out of that for free: it reads as alive rather
+// than empty, and the stars arrive close enough together to start resonating
+// and colliding on their own --- so the instrument shows you what it does
+// before you have placed anything.
 function seedSky(): void {
   const width = canvas!.clientWidth;
   const height = canvas!.clientHeight;
-  for (const spot of [
-    { fx: 0.32, fy: 0.38 },
-    { fx: 0.62, fy: 0.56 },
-    { fx: 0.5, fy: 0.24 },
-  ]) {
-    const x = spot.fx * width;
-    const y = spot.fy * height;
+  // The invitation sits in the bottom band of the sky, so the constellation is
+  // fitted to the space above it rather than centred on the whole canvas ---
+  // otherwise Acrux, the lowest star of the Cross, lands on the words.
+  const placed = projectConstellation(CRUX, width, height * 0.84);
+
+  for (const { star, x, y } of placed) {
     stars.push(
-      makeStar(x, y, (Math.random() - 0.5) * 0.7, (Math.random() - 0.5) * 0.7, degreeForHeight(y, height)),
+      makeStar(x, y, (Math.random() - 0.5) * 34, (Math.random() - 0.5) * 34, degreeForHeight(y, height), {
+        name: star.name,
+        magnitude: star.magnitude,
+      }),
+    );
+  }
+
+  // Canvas text is invisible to a screen reader, so the same catalogue goes
+  // into the page as real markup.
+  if (catalogueList) {
+    catalogueList.replaceChildren(
+      ...placed.map(({ star }) => {
+        const item = document.createElement("li");
+        item.textContent = `${star.name}, magnitude ${star.magnitude}`;
+        return item;
+      }),
     );
   }
 }

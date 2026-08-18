@@ -68,17 +68,33 @@ canvas#sky:focus-visible {
   outline-offset: -1px;
 }
 
-/* The opening invitation. It sits over the drifting sky, breathes so the eye
-   finds it, and gets out of the way the moment the first star is placed. */
+/* The star catalogue is drawn onto the canvas, where a screen reader can't
+   reach it, so it also exists as markup that is read but not seen. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* The opening invitation. It breathes so the eye finds it, and gets out of the
+   way the moment the first star is placed. It sits low rather than centred: the
+   constellation owns the middle of the sky, and centred text landed on top of
+   the star names. */
 .invite {
   position: absolute;
   inset: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-end;
   gap: 0.7rem;
   margin: 0;
+  padding-bottom: 9vh;
   text-align: center;
   pointer-events: none;
   transition: opacity 1.1s ease;
