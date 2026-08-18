@@ -10,13 +10,24 @@
     />
 
     <!--
-      The link-preview card: public/card.png, 1200x630 --- replace it. The URL
-      resolves against this page, like any link. No og:title/og:description:
-      scrapers fall back to the <title> and description above.
+      The link-preview card (public/card.png, 1200x630) is a frame of the
+      instrument itself, captured from the running page rather than drawn: the
+      Southern Cross it opens on, unmoored and resonating, with a few placed
+      stars around it. What a shared link promises is then a thing the page
+      actually does. Regenerate it the same way if the sky changes.
+
+      The URL resolves against the page that names it, like any link, so this
+      relative form is wrong one directory down --- copy an absolute path, not
+      this block, into any new page. No og:title/og:description: scrapers fall
+      back to the <title> and description above.
     -->
     <meta property="og:type" content="website" />
     <meta property="og:image" content="./card.png" />
     <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      property="og:image:alt"
+      content="A dark blue and violet night sky. The Southern Cross glows near the centre, its stars joined by faint lines, with brighter magenta and yellow stars scattered around it."
+    />
 
     <link rel="stylesheet" href="./styles.css" />
   </head>

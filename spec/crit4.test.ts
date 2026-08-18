@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
-import { readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
 import {
@@ -316,5 +316,52 @@ describe("crit 4: a meteor plays what it passes, at any frame rate", () => {
       expect(reach).toBeGreaterThan(0);
     }
     expect(meteorReach(1920, 1080)).toBeGreaterThan(meteorReach(390, 844));
+  });
+});
+
+// The starter's invariants check that an og:image is *named*, and say so: whether
+// it resolves is left to the deploy gallery. That's the gap where the failure
+// the template warns about lives --- a relative card URL is fine at the root and
+// 404s one directory down, which looks perfect locally and ships broken. This
+// closes it for the built page.
+describe("crit 4: the link-preview card is real and the right shape", () => {
+  // Resolved as a URL against the page that names it, which is what a scraper
+  // does --- so the test fails for the same reason a real card would.
+  const pageUrl = pathToFileURL(join(DIST, "index.html"));
+  const named = doc.querySelector('meta[property="og:image"]')?.getAttribute("content")?.trim();
+
+  it("names a card", () => {
+    expect(named).toBeTruthy();
+  });
+
+  it("resolves to a file that the build actually emitted", () => {
+    const target = fileURLToPath(new URL(named!, pageUrl));
+    expect(
+      existsSync(target),
+      `og:image is "${named}", which resolves to ${target} — nothing there, so a shared link renders bare`,
+    ).toBe(true);
+  });
+
+  it("is 1200x630, the size a large summary card is cropped to", () => {
+    const png = readFileSync(fileURLToPath(new URL(named!, pageUrl)));
+    // PNG IHDR: width and height are the two big-endian uint32s at byte 16.
+    expect(png.subarray(1, 4).toString("latin1"), "the card is not a PNG").toBe("PNG");
+    expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([1200, 630]);
+  });
+
+  it("is not still the placeholder the starter shipped", () => {
+    // The provisioned card is a few tens of KB of flat colour. A frame of the
+    // real sky is an order of magnitude more than that, so size alone
+    // distinguishes them without pinning a hash that changes every recapture.
+    const png = readFileSync(fileURLToPath(new URL(named!, pageUrl)));
+    expect(
+      png.length,
+      "card.png looks like the starter placeholder — replace it with something true of this page",
+    ).toBeGreaterThan(120_000);
+  });
+
+  it("describes the card for anyone who cannot see it", () => {
+    const alt = doc.querySelector('meta[property="og:image:alt"]')?.getAttribute("content")?.trim();
+    expect(alt?.length ?? 0).toBeGreaterThan(20);
   });
 });
