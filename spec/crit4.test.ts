@@ -147,9 +147,49 @@ describe("crit 4 spec: the sky reads the same at both marked viewports", () => {
 // ever stops being true the page is lying to the room rather than merely
 // looking different.
 describe("crit 4: the sky it opens on is really the Southern Cross", () => {
-  it("names the five stars of Crux, no duplicates", () => {
-    expect(CRUX.map((s) => s.name)).toEqual(["Acrux", "Mimosa", "Gacrux", "Imai", "Ginan"]);
+  it("labels exactly the five proper-named stars, and names every member once", () => {
+    expect(CRUX.filter((s) => s.proper).map((s) => s.name)).toEqual([
+      "Acrux",
+      "Mimosa",
+      "Gacrux",
+      "Imai",
+      "Ginan",
+    ]);
+    // The rest are Bayer designations and stay unlabelled, or the sky turns into
+    // a chart.
+    expect(CRUX.filter((s) => !s.proper).length).toBeGreaterThan(0);
     expect(new Set(CRUX.map((s) => s.name)).size).toBe(CRUX.length);
+  });
+
+  it("seeds enough of the constellation that it resonates before anything is placed", () => {
+    expect(CRUX.length).toBeGreaterThanOrEqual(9);
+  });
+
+  it("keeps a placed star's colour clear of every real star's, so the two read apart", () => {
+    // Your stars carry pitch as colour; the Cross carries its spectra. If those
+    // ranges overlap, a low note is indistinguishable from a B-type star and the
+    // distinction stops being visible at all.
+    for (let degree = 0; degree < SCALE.length; degree++) {
+      const pitchHue = hueForDegree(degree);
+      for (const star of CRUX) {
+        const gap = Math.abs(pitchHue - star.spectralHue);
+        expect(
+          Math.min(gap, 360 - gap),
+          `degree ${degree} is the same colour as ${star.name}`,
+        ).toBeGreaterThan(20);
+      }
+    }
+  });
+
+  it("gives the Cross its real colours, not one tint for everything", () => {
+    const gacrux = CRUX.find((s) => s.name === "Gacrux")!;
+    const acrux = CRUX.find((s) => s.name === "Acrux")!;
+    // Gacrux is an M-type red giant --- the nearest one to Earth --- among
+    // hot blue-white B-type stars. If it stops reading as the odd one out, the
+    // colour has stopped meaning anything.
+    expect(gacrux.spectralHue).toBeLessThan(60);
+    expect(acrux.spectralHue).toBeGreaterThan(180);
+    expect(new Set(CRUX.map((s) => s.spectralHue)).size).toBeGreaterThan(4);
   });
 
   it("puts every one of them in the far southern sky, where Crux actually is", () => {
@@ -163,20 +203,23 @@ describe("crit 4: the sky it opens on is really the Southern Cross", () => {
   });
 
   it("keeps the magnitudes ordered as they are in the sky", () => {
-    // Acrux is the brightest of the Cross; Ginan is the faintest of the five.
     const brightest = CRUX.reduce((a, b) => (a.magnitude < b.magnitude ? a : b));
-    const faintest = CRUX.reduce((a, b) => (a.magnitude > b.magnitude ? a : b));
     expect(brightest.name).toBe("Acrux");
-    expect(faintest.name).toBe("Ginan");
+    // Every member is naked-eye visible; past about 6 nothing is, and this is
+    // meant to be the sky you can actually stand under and see.
     for (const star of CRUX) {
-      expect(star.magnitude, `${star.name} would be invisible to the eye`).toBeLessThan(4);
+      expect(star.magnitude, `${star.name} would be invisible to the eye`).toBeLessThan(5);
     }
+    // The five that carry the shape are the five brightest.
+    const byBrightness = [...CRUX].sort((a, b) => a.magnitude - b.magnitude);
+    expect(byBrightness.slice(0, 5).every((s) => s.proper)).toBe(true);
   });
 
   it("reads magnitude the right way round: a lower number draws a bigger star", () => {
-    expect(brightnessForMagnitude(0.77)).toBeGreaterThan(brightnessForMagnitude(3.59));
-    // Compressed, or the faint end of the Cross would not be visible at all.
-    expect(brightnessForMagnitude(3.59)).toBeGreaterThan(0.5);
+    expect(brightnessForMagnitude(0.77)).toBeGreaterThan(brightnessForMagnitude(4.69));
+    // Compressed, or the faint end of the Cross would be neither visible nor
+    // audible --- brightness drives voice level as well as size.
+    expect(brightnessForMagnitude(4.69)).toBeGreaterThan(0.35);
     expect(brightnessForMagnitude(0.77)).toBeLessThan(2);
   });
 

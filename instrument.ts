@@ -29,10 +29,13 @@ export function pitchForHeight(y: number, height: number): number {
   return pitchForDegree(degreeForHeight(y, height));
 }
 
-// Colour carries pitch, so the sky is readable as well as audible: low notes
-// sit in deep blue, high notes run up through cyan and violet to pink.
-const HUE_LOW = 205;
-const HUE_HIGH = 320;
+// Colour carries pitch for the stars a player places: low notes sit in violet
+// and run up through magenta to pink. Deliberately clear of the blue-whites and
+// oranges real stars come in --- the sky you were handed and the stars you made
+// have to read apart, and a low note at hue 210 was indistinguishable from a
+// B-type star.
+const HUE_LOW = 252;
+const HUE_HIGH = 332;
 
 export function hueForDegree(degree: number): number {
   const t = Math.min(1, Math.max(0, degree / (SCALE.length - 1)));
@@ -96,7 +99,7 @@ export function resonance(dist: number, reach: number): number {
 // instrument says is true.
 
 export interface CatalogueStar {
-  /** IAU-approved proper name. */
+  /** IAU proper name, or the Bayer designation where there isn't one. */
   name: string;
   /** Right ascension, in hours. */
   ra: number;
@@ -104,14 +107,36 @@ export interface CatalogueStar {
   dec: number;
   /** Apparent visual magnitude. Lower is brighter; the scale runs backwards. */
   magnitude: number;
+  /**
+   * Roughly the colour the eye sees, from the star's spectral class. The Cross
+   * is mostly hot blue-white B-type stars, which is what makes Gacrux --- the
+   * nearest red giant to Earth --- so obviously the odd one out at the top of
+   * it. Worth being real about: a sky of identically tinted dots is the tell
+   * that it was invented.
+   */
+  spectralHue: number;
+  /**
+   * Whether to draw the name. The five with proper names carry the
+   * constellation; labelling the fainter Bayer-designated members as well turns
+   * a sky into a chart.
+   */
+  proper: boolean;
 }
 
+// Crux, from its brightest to its faintest naked-eye member. The five proper
+// names are IAU-approved; the rest are Bayer designations.
 export const CRUX: readonly CatalogueStar[] = [
-  { name: "Acrux", ra: 12.4433, dec: -63.0992, magnitude: 0.77 },
-  { name: "Mimosa", ra: 12.7953, dec: -59.6886, magnitude: 1.25 },
-  { name: "Gacrux", ra: 12.5194, dec: -57.1133, magnitude: 1.63 },
-  { name: "Imai", ra: 12.2525, dec: -58.7489, magnitude: 2.79 },
-  { name: "Ginan", ra: 12.3561, dec: -60.4011, magnitude: 3.59 },
+  { name: "Acrux", ra: 12.4433, dec: -63.0992, magnitude: 0.77, spectralHue: 215, proper: true },
+  { name: "Mimosa", ra: 12.7953, dec: -59.6886, magnitude: 1.25, spectralHue: 217, proper: true },
+  { name: "Gacrux", ra: 12.5194, dec: -57.1133, magnitude: 1.63, spectralHue: 18, proper: true },
+  { name: "Imai", ra: 12.2525, dec: -58.7489, magnitude: 2.79, spectralHue: 220, proper: true },
+  { name: "Ginan", ra: 12.3561, dec: -60.4011, magnitude: 3.59, spectralHue: 34, proper: true },
+  { name: "Mu Crucis", ra: 12.9103, dec: -57.1781, magnitude: 4.03, spectralHue: 219, proper: false },
+  { name: "Zeta Crucis", ra: 12.3072, dec: -64.0031, magnitude: 4.04, spectralHue: 220, proper: false },
+  { name: "Eta Crucis", ra: 12.1147, dec: -64.6136, magnitude: 4.15, spectralHue: 54, proper: false },
+  { name: "Theta Crucis", ra: 12.0506, dec: -63.3128, magnitude: 4.3, spectralHue: 221, proper: false },
+  { name: "Lambda Crucis", ra: 12.9108, dec: -59.1467, magnitude: 4.62, spectralHue: 222, proper: false },
+  { name: "Iota Crucis", ra: 12.7606, dec: -60.9825, magnitude: 4.69, spectralHue: 40, proper: false },
 ];
 
 // The Pointers (Hadar and Rigil Kentaurus) belong to this picture in the real
@@ -168,10 +193,11 @@ export function projectConstellation(
 }
 
 /**
- * Magnitude as a size-and-glow multiplier. Compressed hard: the real scale is
- * logarithmic and Rigil Kentaurus is around fifty times the light of Ginan, so
- * taken literally the faint end of the Cross would be invisible.
+ * Magnitude as a size-and-loudness multiplier. Compressed hard: the real scale
+ * is logarithmic, and Acrux is around forty times the light of Iota Crucis, so
+ * taken literally the faint end of the Cross would be invisible and silent.
+ * Compressed but still ordered --- the bright five have to carry the shape.
  */
 export function brightnessForMagnitude(magnitude: number): number {
-  return Math.min(1.6, Math.max(0.7, 1.6 - 0.22 * (magnitude + 0.3)));
+  return Math.min(1.5, Math.max(0.5, 1.45 - 0.2 * magnitude));
 }

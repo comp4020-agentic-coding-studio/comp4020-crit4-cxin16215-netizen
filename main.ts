@@ -6,6 +6,7 @@
 // every star at once --- so the opening screen invites a sound without
 // needing to explain itself.
 
+import type { CatalogueStar } from "./instrument.ts";
 import {
   COLLIDE_DIST,
   MAX_SPEED,
@@ -89,15 +90,18 @@ function audio(): AudioContext {
  * Dividing by the square root keeps a crowded sky about as loud as a sparse
  * one while still letting each new star be heard arriving.
  */
-function voiceLevel(): number {
-  return 0.075 / Math.sqrt(Math.max(1, stars.length));
+function voiceLevel(star: Star): number {
+  // A fainter star is a quieter voice, which is what keeps eleven of them from
+  // arriving as one undifferentiated cluster chord: the bright five carry it and
+  // the rest are shimmer around the edges.
+  return (0.075 / Math.sqrt(Math.max(1, stars.length))) * star.brightness;
 }
 
 function rebalance(): void {
   if (!audioCtx) return;
-  const level = voiceLevel();
   for (const star of stars) {
     if (!star.voice || star.retiring) continue;
+    const level = voiceLevel(star);
     star.voice.gain.gain.setTargetAtTime(level, audioCtx.currentTime, 0.4);
     star.voice.lfoDepth.gain.setTargetAtTime(level * 0.45, audioCtx.currentTime, 0.4);
   }
@@ -105,7 +109,7 @@ function rebalance(): void {
 
 function createVoice(star: Star): Voice {
   const ac = audio();
-  const level = voiceLevel();
+  const level = voiceLevel(star);
 
   const osc1 = ac.createOscillator();
   osc1.type = "triangle";
@@ -181,8 +185,10 @@ interface Star {
   baseFreq: number;
   hue: number;
   radius: number;
-  /** Named only for the real stars the sky opens on. */
+  /** Named only for the real stars the sky opens on that carry a proper name. */
   name: string | null;
+  /** Apparent brightness, from magnitude for a real star and 1 for a placed one. */
+  brightness: number;
   twinkle: number;
   glow: number; // transient brightness, spent by a collision
   level: number; // 0..1 visual envelope, matches the audio fade
@@ -204,7 +210,7 @@ const ripples: Ripple[] = [];
 
 // Past this the sky stops being music and becomes weather. The oldest star
 // retires instead of refusing the new one, so the instrument never says no.
-const MAX_STARS = 18;
+const MAX_STARS = 26;
 let awake = false;
 
 // The catalogue names label the opening sky and then get out of the way: they
@@ -218,8 +224,9 @@ function makeStar(
   vx: number,
   vy: number,
   degree: number,
-  real?: { name: string; magnitude: number },
+  real?: CatalogueStar,
 ): Star {
+  const brightness = real ? brightnessForMagnitude(real.magnitude) : 1;
   return {
     x,
     y,
@@ -227,11 +234,15 @@ function makeStar(
     vy,
     degree,
     baseFreq: pitchForDegree(degree),
-    hue: hueForDegree(degree),
-    // A real star's apparent brightness is its own; a placed one takes its size
-    // from its pitch, so low notes read as the heavier bodies.
-    radius: radiusForDegree(degree) * (real ? brightnessForMagnitude(real.magnitude) : 1),
-    name: real?.name ?? null,
+    // A real star wears the colour its spectrum gives it; a placed one wears its
+    // pitch. So the sky you were handed and the stars you made read apart at a
+    // glance, and Gacrux stays the red giant it is.
+    hue: real ? real.spectralHue : hueForDegree(degree),
+    // A real star's size is its apparent brightness; a placed one takes it from
+    // its pitch, so low notes read as the heavier bodies.
+    radius: radiusForDegree(degree) * brightness,
+    name: real?.proper ? real.name : null,
+    brightness,
     twinkle: Math.random() * Math.PI * 2,
     glow: 0,
     level: 0,
@@ -285,16 +296,26 @@ function spawn(x: number, y: number, vx: number, vy: number): void {
 }
 
 /**
- * Browsers won't start audio before a gesture, and that turns out to be the
- * best possible opening: the seeded sky drifts in silence until the first
- * touch, and then every star already up there speaks at once.
+ * Browsers won't start audio before a gesture, and that turns out to be the best
+ * possible opening. Until the first touch the Cross holds its shape in silence
+ * --- it's a real constellation, and a real constellation doesn't come apart
+ * while you're looking at it. The first touch does two things at once: every
+ * star already up there speaks, and the whole thing comes loose and begins to
+ * drift. You don't light the sky so much as unmoor it.
  */
 function wake(): void {
   if (awake) return;
   audio();
   awake = true;
   for (const star of stars) {
-    if (!star.voice && !star.retiring) star.voice = createVoice(star);
+    if (star.retiring) continue;
+    if (!star.voice) star.voice = createVoice(star);
+    if (star.vx === 0 && star.vy === 0) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 12 + Math.random() * 22;
+      star.vx = Math.cos(angle) * speed;
+      star.vy = Math.sin(angle) * speed;
+    }
   }
 }
 
@@ -530,6 +551,37 @@ function paintRipples(): void {
   ctx!.globalCompositeOperation = "source-over";
 }
 
+/**
+ * The four-pointed flare a bright star throws. It isn't in the sky --- it's what
+ * a lens or an eye does with a point source --- but it's how we read "bright",
+ * and without it a big star is just a big dot. Only the bright ones get one, so
+ * it still means something.
+ */
+function paintFlare(s: Star, bright: number, radius: number): void {
+  const strength = (s.brightness - 0.85) * bright;
+  if (strength <= 0.02) return;
+  const reach = radius * (7 + strength * 11);
+  ctx!.lineWidth = Math.max(0.7, radius * 0.22);
+  for (const [dx, dy] of [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+  ] as const) {
+    const tipX = s.x + dx * reach;
+    const tipY = s.y + dy * reach;
+    const spike = ctx!.createLinearGradient(s.x, s.y, tipX, tipY);
+    spike.addColorStop(0, `hsla(${s.hue}, 85%, 92%, ${Math.min(0.5, strength * 0.55)})`);
+    spike.addColorStop(0.45, `hsla(${s.hue}, 90%, 78%, ${Math.min(0.18, strength * 0.2)})`);
+    spike.addColorStop(1, "hsla(0, 0%, 0%, 0)");
+    ctx!.strokeStyle = spike;
+    ctx!.beginPath();
+    ctx!.moveTo(s.x, s.y);
+    ctx!.lineTo(tipX, tipY);
+    ctx!.stroke();
+  }
+}
+
 function paintStars(): void {
   ctx!.globalCompositeOperation = "lighter";
   for (const s of stars) {
@@ -537,16 +589,26 @@ function paintStars(): void {
     const bright = s.level * (0.75 + 0.25 * breathe) + s.glow * 0.6;
     const radius = s.radius * breathe * (1 + s.glow * 0.5);
 
-    const halo = ctx!.createRadialGradient(s.x, s.y, 0, s.x, s.y, radius * 7);
-    halo.addColorStop(0, `hsla(${s.hue}, 95%, 82%, ${0.5 * bright})`);
-    halo.addColorStop(0.25, `hsla(${s.hue}, 90%, 66%, ${0.2 * bright})`);
+    paintFlare(s, bright, radius);
+
+    // Two nested glows rather than one: a tight coloured bloom that carries the
+    // star's own colour, inside a wide faint one that gives it air. A single
+    // gradient reads flat, like a sticker on the sky.
+    const reach = radius * 8;
+    const halo = ctx!.createRadialGradient(s.x, s.y, 0, s.x, s.y, reach);
+    halo.addColorStop(0, `hsla(${s.hue}, 95%, 84%, ${0.55 * bright})`);
+    halo.addColorStop(0.14, `hsla(${s.hue}, 95%, 70%, ${0.26 * bright})`);
+    halo.addColorStop(0.42, `hsla(${s.hue}, 88%, 58%, ${0.07 * bright})`);
     halo.addColorStop(1, "hsla(0, 0%, 0%, 0)");
     ctx!.fillStyle = halo;
     ctx!.beginPath();
-    ctx!.arc(s.x, s.y, radius * 7, 0, Math.PI * 2);
+    ctx!.arc(s.x, s.y, reach, 0, Math.PI * 2);
     ctx!.fill();
 
-    ctx!.fillStyle = `hsla(${s.hue}, 100%, 96%, ${Math.min(1, bright)})`;
+    // The core runs white-hot whatever the star's colour: a real star's disc is
+    // saturated well past what a screen can show, so the colour lives in the
+    // bloom around it rather than in the middle.
+    ctx!.fillStyle = `hsla(${s.hue}, 70%, 98%, ${Math.min(1, bright)})`;
     ctx!.beginPath();
     ctx!.arc(s.x, s.y, radius, 0, Math.PI * 2);
     ctx!.fill();
@@ -656,13 +718,10 @@ function seedSky(): void {
   // otherwise Acrux, the lowest star of the Cross, lands on the words.
   const placed = projectConstellation(CRUX, width, height * 0.84);
 
+  // At rest, exactly where they really are. They only come loose on the first
+  // touch --- see wake().
   for (const { star, x, y } of placed) {
-    stars.push(
-      makeStar(x, y, (Math.random() - 0.5) * 34, (Math.random() - 0.5) * 34, degreeForHeight(y, height), {
-        name: star.name,
-        magnitude: star.magnitude,
-      }),
-    );
+    stars.push(makeStar(x, y, 0, 0, degreeForHeight(y, height), star));
   }
 
   // Canvas text is invisible to a screen reader, so the same catalogue goes
