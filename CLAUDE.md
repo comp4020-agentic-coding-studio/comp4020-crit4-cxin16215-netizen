@@ -256,6 +256,29 @@ travelled since the last frame (`distanceToSegment`), not the current point.
 Same root cause as damping per frame instead of per second: any per-frame
 quantity that should be per-second is a bug waiting on someone else's monitor.
 
+## A rendering flourish must never write back to state
+
+Adding a pulse, a shimmer or a wobble by multiplying the state variable it
+decorates looks like the shortest path and is a trap: the factor is reapplied
+every frame, so it compounds. A retiring star's fade was written as
+`level = decay(level) * (0.7 + 0.3 * sin(...))`, and a 1.83s fade became
+0.15--0.32s --- varying twofold with the star's random phase, so the same code
+felt different on every star --- while the voice it was matched to got cut off
+at about 67% amplitude, clicking on every retirement.
+
+The rule: **state advances, drawing decorates.** A quantity another system
+depends on (an envelope another fade is timed against, a position a hit test
+reads, a velocity that feeds physics) is advanced once per frame and never
+multiplied by anything periodic. Compute the flourish inside the paint function,
+from the state, and throw it away.
+
+The tell that this is happening is a change that looks purely cosmetic altering
+something audible or timed. When it does, suspect that the cosmetic term went
+somewhere it is read back from. Note also that the whole class of bug survives a
+green suite easily --- neither the compounding nor the click is visible to any
+check here, and both were found by re-running the expression in a throwaway
+script rather than by reading it.
+
 ## This file is yours
 
 This CLAUDE.md is a starting point, not a fixed rulebook. As you learn what your
