@@ -1,178 +1,609 @@
-// drift: a constellation you can play. Each star is a sustained oscillator.
-// Stars drift and lightly bend pitch toward nearby stars (harmony); an actual
-// collision triggers a plucked chime. A pentatonic scale means any pitch you
-// land on sits inside the same set, so there's no dissonant "wrong" note.
+// drift --- a constellation you can play.
+//
+// Every star is a soft sustained voice; stars drift, bend pitch toward the
+// neighbours they pass, and ring like a struck bell when they collide. The
+// sky is already moving when you arrive, silent, and the first gesture wakes
+// every star at once --- so the opening screen invites a sound without
+// needing to explain itself.
+
+import {
+  COLLIDE_DIST,
+  FRICTION,
+  SCALE,
+  degreeForHeight,
+  harmonyDistance,
+  hueForDegree,
+  pitchForDegree,
+  radiusForDegree,
+  resonance,
+} from "./instrument.ts";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#sky");
+const invite = document.querySelector<HTMLElement>("#invite");
 if (!canvas) throw new Error("missing #sky canvas");
 const ctx = canvas.getContext("2d");
 if (!ctx) throw new Error("2d context unavailable");
 
-// Major pentatonic across two-ish octaves, as semitone offsets from BASE_FREQ.
-const SCALE = [0, 2, 4, 7, 9, 12, 14, 16, 19];
-const BASE_FREQ = 220; // A3
+const calmMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-function noteFrequency(semitones: number): number {
-  return BASE_FREQ * 2 ** (semitones / 12);
-}
+// --- audio -----------------------------------------------------------------
+//
+// A bare sustained sine reads as a test tone: static, thin, and tiring within
+// seconds. What makes a held note sit in the background instead of nagging is
+// movement and air --- two slightly detuned oscillators, a lowpass to take the
+// edge off, a slow tremolo so each voice breathes on its own clock, and a
+// reverb so nothing sounds like it is coming from inside the speaker.
 
-function pitchForHeight(y: number, height: number): number {
-  const t = Math.min(1, Math.max(0, 1 - y / height));
-  const index = Math.round(t * (SCALE.length - 1));
-  return noteFrequency(SCALE[index]);
+interface Voice {
+  osc1: OscillatorNode;
+  osc2: OscillatorNode;
+  filter: BiquadFilterNode;
+  gain: GainNode;
+  lfo: OscillatorNode;
+  lfoDepth: GainNode;
 }
 
 let audioCtx: AudioContext | null = null;
+let master: GainNode | null = null;
+let reverb: ConvolverNode | null = null;
+
+/** A decaying noise burst is a serviceable impulse response, and it's cheap. */
+function impulseResponse(ac: AudioContext, seconds = 2.8, decay = 2.4): AudioBuffer {
+  const length = Math.floor(ac.sampleRate * seconds);
+  const buffer = ac.createBuffer(2, length, ac.sampleRate);
+  for (let channel = 0; channel < 2; channel++) {
+    const data = buffer.getChannelData(channel);
+    for (let i = 0; i < length; i++) {
+      data[i] = (Math.random() * 2 - 1) * (1 - i / length) ** decay;
+    }
+  }
+  return buffer;
+}
+
 function audio(): AudioContext {
-  audioCtx ??= new AudioContext();
+  if (!audioCtx) {
+    const ac = new AudioContext();
+    master = ac.createGain();
+    master.gain.value = 0.9;
+    master.connect(ac.destination);
+
+    reverb = ac.createConvolver();
+    reverb.buffer = impulseResponse(ac);
+    const wet = ac.createGain();
+    wet.gain.value = 0.55;
+    reverb.connect(wet).connect(master);
+
+    audioCtx = ac;
+  }
   if (audioCtx.state === "suspended") void audioCtx.resume();
   return audioCtx;
 }
+
+/**
+ * Voices share the output, so N stars must not sum to N times the loudness.
+ * Dividing by the square root keeps a crowded sky about as loud as a sparse
+ * one while still letting each new star be heard arriving.
+ */
+function voiceLevel(): number {
+  return 0.075 / Math.sqrt(Math.max(1, stars.length));
+}
+
+function rebalance(): void {
+  if (!audioCtx) return;
+  const level = voiceLevel();
+  for (const star of stars) {
+    if (!star.voice || star.retiring) continue;
+    star.voice.gain.gain.setTargetAtTime(level, audioCtx.currentTime, 0.4);
+    star.voice.lfoDepth.gain.setTargetAtTime(level * 0.45, audioCtx.currentTime, 0.4);
+  }
+}
+
+function createVoice(star: Star): Voice {
+  const ac = audio();
+  const level = voiceLevel();
+
+  const osc1 = ac.createOscillator();
+  osc1.type = "triangle";
+  osc1.frequency.value = star.baseFreq;
+
+  // A few cents apart, so the pair drifts in and out of phase. That slow beat
+  // is what stops a held note sounding synthetic.
+  const osc2 = ac.createOscillator();
+  osc2.type = "sine";
+  osc2.frequency.value = star.baseFreq;
+  osc2.detune.value = 7;
+
+  const filter = ac.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.value = Math.min(2200, Math.max(500, star.baseFreq * 2.6));
+  filter.Q.value = 0.6;
+
+  const gain = ac.createGain();
+  gain.gain.value = 0;
+
+  // Each voice breathes at its own rate, so a chord of them never pulses in
+  // lockstep the way one shared LFO would.
+  const lfo = ac.createOscillator();
+  lfo.frequency.value = 0.05 + Math.random() * 0.13;
+  const lfoDepth = ac.createGain();
+  lfoDepth.gain.value = level * 0.45;
+  lfo.connect(lfoDepth).connect(gain.gain);
+
+  osc1.connect(filter);
+  osc2.connect(filter);
+  filter.connect(gain);
+  gain.connect(master!);
+  gain.connect(reverb!);
+
+  osc1.start();
+  osc2.start();
+  lfo.start();
+
+  // A long attack means a star fades in rather than clicking on --- placing
+  // one is a gentle act, not a jab.
+  gain.gain.linearRampToValueAtTime(level, ac.currentTime + 2.2);
+
+  return { osc1, osc2, filter, gain, lfo, lfoDepth };
+}
+
+/** A short plucked overtone: what a collision sounds like, distinct from the pad. */
+function pluck(freq: number, strength: number): void {
+  const ac = audio();
+  const now = ac.currentTime;
+  const osc = ac.createOscillator();
+  const gain = ac.createGain();
+  osc.type = "sine";
+  osc.frequency.value = freq * 2; // an octave up, so it rings clear of the pad
+  gain.gain.value = 0;
+  osc.connect(gain);
+  gain.connect(master!);
+  gain.connect(reverb!);
+  const peak = Math.min(0.06 + strength * 0.22, 0.28);
+  gain.gain.linearRampToValueAtTime(peak, now + 0.006);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.4);
+  osc.start(now);
+  osc.stop(now + 1.5);
+}
+
+// --- state -----------------------------------------------------------------
 
 interface Star {
   x: number;
   y: number;
   vx: number;
   vy: number;
+  degree: number;
   baseFreq: number;
+  hue: number;
   radius: number;
-  osc: OscillatorNode;
-  gain: GainNode;
+  twinkle: number;
+  glow: number; // transient brightness, spent by a collision
+  level: number; // 0..1 visual envelope, matches the audio fade
+  retiring: boolean;
+  lastChimeAt: number;
+  voice: Voice | null;
+}
+
+interface Ripple {
+  x: number;
+  y: number;
+  hue: number;
+  age: number;
+  strength: number;
 }
 
 const stars: Star[] = [];
+const ripples: Ripple[] = [];
+
+// Past this the sky stops being music and becomes weather. The oldest star
+// retires instead of refusing the new one, so the instrument never says no.
+const MAX_STARS = 18;
+let awake = false;
+
+function makeStar(x: number, y: number, vx: number, vy: number, degree: number): Star {
+  return {
+    x,
+    y,
+    vx,
+    vy,
+    degree,
+    baseFreq: pitchForDegree(degree),
+    hue: hueForDegree(degree),
+    radius: radiusForDegree(degree),
+    twinkle: Math.random() * Math.PI * 2,
+    glow: 0,
+    level: 0,
+    retiring: false,
+    lastChimeAt: 0,
+    voice: null,
+  };
+}
+
+function retire(star: Star): void {
+  star.retiring = true;
+  if (star.voice && audioCtx) {
+    star.voice.gain.gain.cancelScheduledValues(audioCtx.currentTime);
+    star.voice.gain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.5);
+  }
+}
+
+function dispose(star: Star): void {
+  if (!star.voice) return;
+  const { osc1, osc2, lfo } = star.voice;
+  for (const node of [osc1, osc2, lfo]) {
+    try {
+      node.stop();
+    } catch {
+      // already stopped; nothing to undo
+    }
+  }
+  star.voice = null;
+}
+
+function spawn(x: number, y: number, vx: number, vy: number): void {
+  const star = makeStar(x, y, vx, vy, degreeForHeight(y, canvas!.clientHeight));
+  stars.push(star);
+
+  const living = stars.filter((s) => !s.retiring);
+  if (living.length > MAX_STARS) retire(living[0]!);
+
+  wake();
+  if (awake) star.voice = createVoice(star);
+  rebalance();
+  invite?.classList.add("is-gone");
+}
+
+/**
+ * Browsers won't start audio before a gesture, and that turns out to be the
+ * best possible opening: the seeded sky drifts in silence until the first
+ * touch, and then every star already up there speaks at once.
+ */
+function wake(): void {
+  if (awake) return;
+  audio();
+  awake = true;
+  for (const star of stars) {
+    if (!star.voice && !star.retiring) star.voice = createVoice(star);
+  }
+}
+
+// --- background ------------------------------------------------------------
+
+interface Speck {
+  x: number;
+  y: number;
+  r: number;
+  phase: number;
+  rate: number;
+}
+
+let specks: Speck[] = [];
+let nebulae: { x: number; y: number; r: number; hue: number }[] = [];
+
+function seedBackground(width: number, height: number): void {
+  const count = Math.round((width * height) / 5200);
+  specks = Array.from({ length: count }, () => ({
+    x: Math.random() * width,
+    y: Math.random() * height,
+    r: 0.3 + Math.random() * 1.1,
+    phase: Math.random() * Math.PI * 2,
+    rate: 0.4 + Math.random() * 1.6,
+  }));
+  nebulae = [
+    { x: width * 0.22, y: height * 0.3, r: Math.max(width, height) * 0.42, hue: 250 },
+    { x: width * 0.78, y: height * 0.68, r: Math.max(width, height) * 0.38, hue: 205 },
+    { x: width * 0.55, y: height * 0.1, r: Math.max(width, height) * 0.3, hue: 305 },
+  ];
+}
 
 function resize(): void {
-  canvas!.width = canvas!.clientWidth * devicePixelRatio;
-  canvas!.height = canvas!.clientHeight * devicePixelRatio;
+  const width = canvas!.clientWidth;
+  const height = canvas!.clientHeight;
+  canvas!.width = width * devicePixelRatio;
+  canvas!.height = height * devicePixelRatio;
+  seedBackground(width, height);
 }
 window.addEventListener("resize", resize);
-resize();
 
-function spawnStar(x: number, y: number, vx: number, vy: number): void {
-  const ac = audio();
-  const baseFreq = pitchForHeight(y, canvas!.clientHeight);
-  const osc = ac.createOscillator();
-  const gain = ac.createGain();
-  osc.type = "sine";
-  osc.frequency.value = baseFreq;
-  gain.gain.value = 0;
-  osc.connect(gain).connect(ac.destination);
-  osc.start();
-  gain.gain.linearRampToValueAtTime(0.07, ac.currentTime + 0.6);
-  stars.push({ x, y, vx, vy, baseFreq, radius: 5, osc, gain });
-}
+// --- motion ----------------------------------------------------------------
 
-function chime(star: Star, strength: number): void {
-  const ac = audio();
-  const now = ac.currentTime;
-  const peak = Math.min(0.06 + strength * 0.35, 0.5);
-  star.gain.gain.cancelScheduledValues(now);
-  star.gain.gain.setValueAtTime(star.gain.gain.value, now);
-  star.gain.gain.linearRampToValueAtTime(peak, now + 0.015);
-  star.gain.gain.linearRampToValueAtTime(0.07, now + 0.35);
-}
-
-const FRICTION = 0.996;
-const COLLIDE_DIST = 20;
-const HARMONY_DIST = 110;
-
-function physicsStep(width: number, height: number): void {
-  for (const s of stars) {
-    s.x += s.vx;
-    s.y += s.vy;
+function step(width: number, height: number, dt: number): void {
+  for (let i = stars.length - 1; i >= 0; i--) {
+    const s = stars[i]!;
+    const drift = calmMotion ? 0.35 : 1;
+    s.x += s.vx * drift;
+    s.y += s.vy * drift;
     s.vx *= FRICTION;
     s.vy *= FRICTION;
+
     if (s.x < s.radius || s.x > width - s.radius) s.vx *= -1;
     if (s.y < s.radius || s.y > height - s.radius) s.vy *= -1;
     s.x = Math.min(Math.max(s.x, s.radius), width - s.radius);
     s.y = Math.min(Math.max(s.y, s.radius), height - s.radius);
+
+    s.twinkle += dt * 1.6;
+    s.glow = Math.max(0, s.glow - dt * 1.7);
+    s.level = s.retiring
+      ? Math.max(0, s.level - dt * 0.55)
+      : Math.min(1, s.level + dt * 0.45);
+
+    if (s.retiring && s.level <= 0) {
+      dispose(s);
+      stars.splice(i, 1);
+    }
   }
 
-  const ac = audio();
+  // Pitch pull is accumulated per star and applied once, so a star with two
+  // neighbours is drawn between both rather than snapping to whichever pair
+  // the loop happened to visit last.
+  const pull = new Map<Star, { sum: number; weight: number }>();
+  const now = performance.now();
+  const reach = harmonyDistance(width, height);
+
   for (let i = 0; i < stars.length; i++) {
     for (let j = i + 1; j < stars.length; j++) {
       const a = stars[i]!;
       const b = stars[j]!;
+      if (a.retiring || b.retiring) continue;
+
       const dx = a.x - b.x;
       const dy = a.y - b.y;
       const dist = Math.hypot(dx, dy) || 0.001;
+      if (dist >= reach) continue;
 
       if (dist < COLLIDE_DIST) {
-        const speed = Math.hypot(a.vx - b.vx, a.vy - b.vy);
-        chime(a, speed / 3);
-        chime(b, speed / 3);
         const nx = dx / dist;
         const ny = dy / dist;
-        a.vx += nx * 0.6;
-        a.vy += ny * 0.6;
-        b.vx -= nx * 0.6;
-        b.vy -= ny * 0.6;
-      } else if (dist < HARMONY_DIST) {
-        const pull = (1 - dist / HARMONY_DIST) * 0.15;
-        a.osc.frequency.setTargetAtTime(a.baseFreq + (b.baseFreq - a.baseFreq) * pull, ac.currentTime, 0.15);
-        b.osc.frequency.setTargetAtTime(b.baseFreq + (a.baseFreq - b.baseFreq) * pull, ac.currentTime, 0.15);
-      } else {
-        a.osc.frequency.setTargetAtTime(a.baseFreq, ac.currentTime, 0.15);
-        b.osc.frequency.setTargetAtTime(b.baseFreq, ac.currentTime, 0.15);
+        // Separate them before anything else: two stars left overlapping
+        // re-collide every frame and machine-gun the chime.
+        const overlap = (COLLIDE_DIST - dist) / 2 + 0.5;
+        a.x += nx * overlap;
+        a.y += ny * overlap;
+        b.x -= nx * overlap;
+        b.y -= ny * overlap;
+
+        const speed = Math.hypot(a.vx - b.vx, a.vy - b.vy);
+        const impulse = 0.35 + speed * 0.25;
+        a.vx += nx * impulse;
+        a.vy += ny * impulse;
+        b.vx -= nx * impulse;
+        b.vy -= ny * impulse;
+
+        if (awake && now - a.lastChimeAt > 140 && now - b.lastChimeAt > 140) {
+          const strength = Math.min(1, speed / 6);
+          pluck(a.baseFreq, strength);
+          pluck(b.baseFreq, strength);
+          a.lastChimeAt = now;
+          b.lastChimeAt = now;
+          a.glow = 1;
+          b.glow = 1;
+          ripples.push({
+            x: (a.x + b.x) / 2,
+            y: (a.y + b.y) / 2,
+            hue: (a.hue + b.hue) / 2,
+            age: 0,
+            strength: 0.4 + strength * 0.6,
+          });
+        }
+        continue;
+      }
+
+      const weight = resonance(dist, reach) * 0.22;
+      for (const [self, other] of [
+        [a, b],
+        [b, a],
+      ] as const) {
+        const entry = pull.get(self) ?? { sum: 0, weight: 0 };
+        entry.sum += other.baseFreq * weight;
+        entry.weight += weight;
+        pull.set(self, entry);
       }
     }
   }
+
+  if (audioCtx) {
+    for (const s of stars) {
+      if (!s.voice || s.retiring) continue;
+      const entry = pull.get(s);
+      const target = entry
+        ? s.baseFreq * (1 - entry.weight) + entry.sum
+        : s.baseFreq;
+      s.voice.osc1.frequency.setTargetAtTime(target, audioCtx.currentTime, 0.25);
+      s.voice.osc2.frequency.setTargetAtTime(target, audioCtx.currentTime, 0.25);
+    }
+  }
+
+  for (let i = ripples.length - 1; i >= 0; i--) {
+    const r = ripples[i]!;
+    r.age += dt;
+    if (r.age > 1.3) ripples.splice(i, 1);
+  }
 }
 
-function draw(width: number, height: number): void {
-  ctx!.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
-  ctx!.clearRect(0, 0, width, height);
-  for (const s of stars) {
+// --- drawing ---------------------------------------------------------------
+
+function paintSky(width: number, height: number, elapsed: number): void {
+  // Repainting the gradient at partial alpha instead of clearing leaves a
+  // decaying trace of where each star has been --- the drift becomes visible
+  // as a tail rather than having to be inferred frame to frame.
+  const sky = ctx!.createLinearGradient(0, 0, width * 0.3, height);
+  sky.addColorStop(0, "#070a1d");
+  sky.addColorStop(0.55, "#0a0b22");
+  sky.addColorStop(1, "#04050f");
+  ctx!.globalAlpha = calmMotion ? 1 : 0.26;
+  ctx!.fillStyle = sky;
+  ctx!.fillRect(0, 0, width, height);
+  ctx!.globalAlpha = 1;
+
+  ctx!.globalCompositeOperation = "lighter";
+  for (const cloud of nebulae) {
+    const glow = ctx!.createRadialGradient(cloud.x, cloud.y, 0, cloud.x, cloud.y, cloud.r);
+    glow.addColorStop(0, `hsla(${cloud.hue}, 70%, 42%, 0.085)`);
+    glow.addColorStop(0.6, `hsla(${cloud.hue}, 70%, 30%, 0.03)`);
+    glow.addColorStop(1, "hsla(0, 0%, 0%, 0)");
+    ctx!.fillStyle = glow;
+    ctx!.fillRect(0, 0, width, height);
+  }
+
+  for (const speck of specks) {
+    const twinkle = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(elapsed * speck.rate + speck.phase));
+    ctx!.globalAlpha = twinkle * 0.7;
+    ctx!.fillStyle = "#cdd9ff";
     ctx!.beginPath();
-    ctx!.fillStyle = "#eaf2ff";
-    ctx!.shadowColor = "#8ab4ff";
-    ctx!.shadowBlur = 14;
-    ctx!.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+    ctx!.arc(speck.x, speck.y, speck.r, 0, Math.PI * 2);
     ctx!.fill();
   }
-  ctx!.shadowBlur = 0;
+  ctx!.globalAlpha = 1;
+  ctx!.globalCompositeOperation = "source-over";
 }
 
-function frame(): void {
+function paintResonance(reach: number): void {
+  ctx!.globalCompositeOperation = "lighter";
+  for (let i = 0; i < stars.length; i++) {
+    for (let j = i + 1; j < stars.length; j++) {
+      const a = stars[i]!;
+      const b = stars[j]!;
+      const dist = Math.hypot(a.x - b.x, a.y - b.y);
+      const strength = resonance(dist, reach) * a.level * b.level;
+      if (strength <= 0.01) continue;
+      const hue = (a.hue + b.hue) / 2;
+      ctx!.strokeStyle = `hsla(${hue}, 90%, 76%, ${strength * 0.5})`;
+      ctx!.lineWidth = 0.6 + strength * 1.4;
+      ctx!.beginPath();
+      ctx!.moveTo(a.x, a.y);
+      ctx!.lineTo(b.x, b.y);
+      ctx!.stroke();
+    }
+  }
+  ctx!.globalCompositeOperation = "source-over";
+}
+
+function paintRipples(): void {
+  ctx!.globalCompositeOperation = "lighter";
+  for (const r of ripples) {
+    const t = r.age / 1.3;
+    const radius = 12 + t * 90 * r.strength;
+    ctx!.strokeStyle = `hsla(${r.hue}, 95%, 80%, ${(1 - t) * 0.5 * r.strength})`;
+    ctx!.lineWidth = 2 * (1 - t);
+    ctx!.beginPath();
+    ctx!.arc(r.x, r.y, radius, 0, Math.PI * 2);
+    ctx!.stroke();
+  }
+  ctx!.globalCompositeOperation = "source-over";
+}
+
+function paintStars(): void {
+  ctx!.globalCompositeOperation = "lighter";
+  for (const s of stars) {
+    const breathe = 0.82 + 0.18 * Math.sin(s.twinkle);
+    const bright = s.level * (0.75 + 0.25 * breathe) + s.glow * 0.6;
+    const radius = s.radius * breathe * (1 + s.glow * 0.5);
+
+    const halo = ctx!.createRadialGradient(s.x, s.y, 0, s.x, s.y, radius * 7);
+    halo.addColorStop(0, `hsla(${s.hue}, 95%, 82%, ${0.5 * bright})`);
+    halo.addColorStop(0.25, `hsla(${s.hue}, 90%, 66%, ${0.2 * bright})`);
+    halo.addColorStop(1, "hsla(0, 0%, 0%, 0)");
+    ctx!.fillStyle = halo;
+    ctx!.beginPath();
+    ctx!.arc(s.x, s.y, radius * 7, 0, Math.PI * 2);
+    ctx!.fill();
+
+    ctx!.fillStyle = `hsla(${s.hue}, 100%, 96%, ${Math.min(1, bright)})`;
+    ctx!.beginPath();
+    ctx!.arc(s.x, s.y, radius, 0, Math.PI * 2);
+    ctx!.fill();
+  }
+  ctx!.globalCompositeOperation = "source-over";
+}
+
+let last = performance.now();
+function frame(now: number): void {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
   const width = canvas!.clientWidth;
   const height = canvas!.clientHeight;
-  physicsStep(width, height);
-  draw(width, height);
+
+  ctx!.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  step(width, height, dt);
+  paintSky(width, height, now / 1000);
+  paintResonance(harmonyDistance(width, height));
+  paintRipples();
+  paintStars();
   requestAnimationFrame(frame);
 }
-requestAnimationFrame(frame);
 
-// Pointer input: a still tap drops a star in place; a drag flings it, with
-// launch speed and direction taken straight from the gesture.
-let dragStart: { x: number; y: number; t: number } | null = null;
+// --- input -----------------------------------------------------------------
+//
+// Pointer Events cover mouse, touch and pen in one path, so there's no second
+// implementation to keep in sync (and nothing that works on a laptop but not
+// on a phone).
+
+let drag: { x: number; y: number; t: number } | null = null;
+
+function localPoint(event: PointerEvent): { x: number; y: number } {
+  const rect = canvas!.getBoundingClientRect();
+  return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+}
 
 canvas.addEventListener("pointerdown", (event) => {
-  const rect = canvas!.getBoundingClientRect();
-  dragStart = { x: event.clientX - rect.left, y: event.clientY - rect.top, t: performance.now() };
+  const { x, y } = localPoint(event);
+  drag = { x, y, t: performance.now() };
+  canvas!.setPointerCapture(event.pointerId);
   canvas!.focus();
 });
 
 canvas.addEventListener("pointerup", (event) => {
-  if (!dragStart) return;
-  const rect = canvas!.getBoundingClientRect();
-  const x = event.clientX - rect.left;
-  const y = event.clientY - rect.top;
-  const dt = Math.max(16, performance.now() - dragStart.t);
-  const vx = ((x - dragStart.x) / dt) * 12;
-  const vy = ((y - dragStart.y) / dt) * 12;
-  spawnStar(x, y, vx, vy);
-  dragStart = null;
+  if (!drag) return;
+  const { x, y } = localPoint(event);
+  const dt = Math.max(24, performance.now() - drag.t);
+  // A still tap leaves the star where it was put; a flick hands it the speed
+  // and direction of the gesture.
+  const vx = ((x - drag.x) / dt) * 14;
+  const vy = ((y - drag.y) / dt) * 14;
+  spawn(x, y, Math.max(-6, Math.min(6, vx)), Math.max(-6, Math.min(6, vy)));
+  drag = null;
 });
 
-// Keyboard: 1-8 drop a star at a fixed spot tuned to that scale degree, so
-// the instrument is playable without a pointer at all.
+canvas.addEventListener("pointercancel", () => {
+  drag = null;
+});
+
+// The number keys make the whole instrument playable with no pointer at all:
+// each one drops a star at its own scale degree, spread across the sky.
 window.addEventListener("keydown", (event) => {
-  const degree = Number(event.key);
-  if (!Number.isInteger(degree) || degree < 1 || degree > 8) return;
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  const typed = Number(event.key);
+  if (!Number.isInteger(typed) || typed < 1 || typed > SCALE.length) return;
+  event.preventDefault();
   const width = canvas!.clientWidth;
   const height = canvas!.clientHeight;
-  const x = ((degree - 0.5) / 8) * width;
-  const y = height - (degree / 8) * height;
-  spawnStar(x, y, 0, 0);
+  const degree = typed - 1;
+  const y = height - ((degree + 0.5) / SCALE.length) * height;
+  const x = width * (0.2 + 0.6 * Math.random());
+  spawn(x, y, (Math.random() - 0.5) * 1.2, (Math.random() - 0.5) * 1.2);
 });
+
+// --- opening state ---------------------------------------------------------
+
+resize();
+
+// A few stars are already adrift when the page loads, silent until the first
+// gesture. The sky reads as alive rather than empty, and there is something
+// to aim at before you know what tapping will do.
+function seedSky(): void {
+  const width = canvas!.clientWidth;
+  const height = canvas!.clientHeight;
+  for (const spot of [
+    { fx: 0.32, fy: 0.38 },
+    { fx: 0.62, fy: 0.56 },
+    { fx: 0.5, fy: 0.24 },
+  ]) {
+    const x = spot.fx * width;
+    const y = spot.fy * height;
+    stars.push(
+      makeStar(x, y, (Math.random() - 0.5) * 0.7, (Math.random() - 0.5) * 0.7, degreeForHeight(y, height)),
+    );
+  }
+}
+seedSky();
+requestAnimationFrame(frame);

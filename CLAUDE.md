@@ -214,6 +214,39 @@ base rule, even if it duplicates a couple of outline lines. Do this the first
 time a new interactive element is added, not as cleanup after `pnpm check`
 catches it.
 
+## What a sustained tone needs before it stops being irritating
+
+A held oscillator at a fixed frequency reads as a *test tone*, not as music:
+after a few seconds it's actively unpleasant, and stacking several makes it
+worse rather than richer. Nothing in `pnpm check` can tell you this --- the
+suite is equally happy with a beautiful pad and a dentist's drill --- so it
+has to be listened for, and it was only caught by playing the page.
+
+What actually fixed it, and is worth reaching for first next time:
+
+- **movement in the timbre**: two oscillators a few cents apart (so they beat
+  slowly), a lowpass filter to take off the edge, and a slow per-voice tremolo
+  LFO at its own rate so a chord of them never pulses in lockstep
+- **space**: a `ConvolverNode` fed a decaying-noise buffer is a serviceable
+  reverb in about eight lines, and it stops everything sounding like it's
+  coming from inside the speaker
+- **a long attack** --- a couple of seconds --- so a voice arrives instead of
+  clicking on
+- **sum-aware gain**: N voices at the same level are N times as loud, so scale
+  each by `1/sqrt(n)` and cap the voice count, retiring the oldest rather than
+  refusing a new one
+
+The transient and the drone also want to be *different voices*. Modulating the
+pad's own gain to signal an event just makes the pad pump; a separate
+short-decay oscillator reads as a struck bell against it.
+
+## Physics events need a cooldown and a separation step
+
+Two bodies left overlapping after a collision re-collide on every frame, which
+machine-guns whatever the collision triggers. Both halves are needed: push them
+apart so they no longer intersect, *and* refuse to re-trigger within ~140ms.
+The same shape will apply to any event fired from a proximity test.
+
 ## This file is yours
 
 This CLAUDE.md is a starting point, not a fixed rulebook. As you learn what your

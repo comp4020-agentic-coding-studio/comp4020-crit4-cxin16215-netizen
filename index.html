@@ -31,9 +31,12 @@
       <canvas
         id="sky"
         tabindex="0"
-        aria-label="A dark sky you can play. Tap or drag to release a star; press 1 to 8 to drop one at a fixed pitch."
+        aria-label="A night sky you can play. Tap or drag anywhere to release a star that sounds a note; flick to send it drifting, and press the number keys 1 to 9 to place one without a pointer. Stars that pass close together harmonise, and ring when they touch."
       ></canvas>
-      <p class="hint" aria-hidden="true">tap the sky · drag to fling · 1–8</p>
+      <p class="invite" id="invite">
+        <span class="invite-line">touch the sky</span>
+        <span class="invite-sub">drag to send a star drifting · or press 1–9</span>
+      </p>
     </main>
     <script type="module" src="./main.ts"></script>
   </body>
