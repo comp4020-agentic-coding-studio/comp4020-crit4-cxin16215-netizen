@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>COMP4020 prototype</title>
+    <title>drift — an instrument</title>
     <meta
       name="description"
-      content="Replace this with one sentence saying what this page is. A search result and a link preview both show it."
+      content="A constellation you can play: tap or drag to release a star, let it drift, and listen for what it becomes."
     />
 
     <!--
@@ -25,13 +25,15 @@
       <nav aria-label="Primary">
         <a href="./">Home</a>
       </nav>
+      <h1>drift</h1>
     </header>
     <main>
-      <h1>COMP4020 prototype</h1>
-      <p data-testid="intro">
-        Replace this with your prototype. This week's brief is on the course website;
-        <code>spec/README.md</code> explains how the checks in this repo relate to it.
-      </p>
+      <canvas
+        id="sky"
+        tabindex="0"
+        aria-label="A dark sky you can play. Tap or drag to release a star; press 1 to 8 to drop one at a fixed pitch."
+      ></canvas>
+      <p class="hint" aria-hidden="true">tap the sky · drag to fling · 1–8</p>
     </main>
     <script type="module" src="./main.ts"></script>
   </body>
