@@ -247,6 +247,15 @@ machine-guns whatever the collision triggers. Both halves are needed: push them
 apart so they no longer intersect, *and* refuse to re-trigger within ~140ms.
 The same shape will apply to any event fired from a proximity test.
 
+The mirror-image bug is a fast mover *missing* what it should hit. Anything
+crossing the screen in a second or two travels tens of pixels per frame, so
+testing where it *is* lets it step clean over a target between frames --- and
+because a faster display steps less far, the bug appears and disappears by
+hardware, which is the worst way for one to behave. Test against the segment
+travelled since the last frame (`distanceToSegment`), not the current point.
+Same root cause as damping per frame instead of per second: any per-frame
+quantity that should be per-second is a bug waiting on someone else's monitor.
+
 ## This file is yours
 
 This CLAUDE.md is a starting point, not a fixed rulebook. As you learn what your

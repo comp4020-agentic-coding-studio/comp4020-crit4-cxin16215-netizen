@@ -1,10 +1,11 @@
 // drift --- a constellation you can play.
 //
 // Every star is a soft sustained voice; stars drift, bend pitch toward the
-// neighbours they pass, and ring like a struck bell when they collide. The
-// sky is already moving when you arrive, silent, and the first gesture wakes
-// every star at once --- so the opening screen invites a sound without
-// needing to explain itself.
+// neighbours they pass, and ring like a struck bell when they collide. The sky
+// opens on the real Southern Cross, holding its catalogue shape in silence,
+// and the first gesture both wakes every star and sets the whole thing adrift
+// --- so the opening screen invites a sound without needing to explain itself.
+// Now and then a meteor crosses and plays whatever it passes.
 
 import type { CatalogueStar } from "./instrument.ts";
 import {
@@ -15,8 +16,10 @@ import {
   brightnessForMagnitude,
   damping,
   degreeForHeight,
+  distanceToSegment,
   harmonyDistance,
   hueForDegree,
+  meteorReach,
   pitchForDegree,
   projectConstellation,
   radiusForDegree,
@@ -205,13 +208,46 @@ interface Ripple {
   strength: number;
 }
 
+/**
+ * A meteor is weather, not a body. It has no voice of its own and takes no part
+ * in the physics --- nothing it passes is pushed, and it can't be aimed or
+ * caught. All it does is sound the stars it grazes, which means what you hear
+ * from one is entirely the arrangement you happened to leave up there: a bow
+ * drawn across your own strings.
+ */
+interface Meteor {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  hue: number;
+  age: number;
+  /** Stars already sounded, so one pass rings each of them at most once. */
+  struck: Set<Star>;
+}
+
 const stars: Star[] = [];
 const ripples: Ripple[] = [];
+const meteors: Meteor[] = [];
 
 // Past this the sky stops being music and becomes weather. The oldest star
 // retires instead of refusing the new one, so the instrument never says no.
 const MAX_STARS = 26;
 let awake = false;
+
+// Rare enough to feel like luck rather than a metronome, frequent enough that a
+// pod playing for a couple of minutes will see two or three. Nothing waits on
+// one, so a player who never sees a meteor has still heard the whole
+// instrument.
+const METEOR_GAP_MS = 11_000;
+const METEOR_JITTER_MS = 15_000;
+let nextMeteorAt = Number.POSITIVE_INFINITY;
+
+function scheduleMeteor(now: number, gap = METEOR_GAP_MS): void {
+  // Reduced motion means fewer sudden crossings, not none.
+  const spread = calmMotion ? 2.2 : 1;
+  nextMeteorAt = now + (gap + Math.random() * METEOR_JITTER_MS) * spread;
+}
 
 // The catalogue names label the opening sky and then get out of the way: they
 // are there to say "this is a real place", which is a thing you only need told
@@ -317,6 +353,106 @@ function wake(): void {
       star.vy = Math.sin(angle) * speed;
     }
   }
+  // The first meteor comes sooner than the rest, so the fact that they happen
+  // at all is discovered while the player is still exploring.
+  scheduleMeteor(performance.now(), 5_000);
+}
+
+// --- meteors ---------------------------------------------------------------
+
+function spawnMeteor(width: number, height: number): void {
+  const living = stars.filter((s) => !s.retiring);
+
+  // Aimed loosely through the middle of whatever is currently up there. Left to
+  // chance it would usually cross empty sky and sound nothing, which reads as a
+  // bug rather than as a near miss.
+  const centre = living.length
+    ? {
+        x: living.reduce((sum, s) => sum + s.x, 0) / living.length,
+        y: living.reduce((sum, s) => sum + s.y, 0) / living.length,
+      }
+    : { x: width / 2, y: height / 2 };
+  const aimX = centre.x + (Math.random() - 0.5) * width * 0.34;
+  const aimY = centre.y + (Math.random() - 0.5) * height * 0.34;
+
+  // In from off one side, and from the upper part of the sky --- which is where
+  // they come from, and it keeps the streak clear of the invitation.
+  const margin = 120;
+  const fromLeft = Math.random() < 0.5;
+  const startX = fromLeft ? -margin : width + margin;
+  const startY = Math.random() * height * 0.5;
+
+  const dx = aimX - startX;
+  const dy = aimY - startY;
+  const length = Math.hypot(dx, dy) || 1;
+  const seconds = (calmMotion ? 3.6 : 1.5) + Math.random() * 0.6;
+  const speed = (Math.hypot(width, height) + margin * 2) / seconds;
+
+  meteors.push({
+    x: startX,
+    y: startY,
+    vx: (dx / length) * speed,
+    vy: (dy / length) * speed,
+    hue: 196 + Math.random() * 26,
+    age: 0,
+    struck: new Set(),
+  });
+}
+
+function updateMeteors(width: number, height: number, dt: number, now: number): void {
+  // One at a time. Two crossing at once stops being an event.
+  if (awake && meteors.length === 0 && now >= nextMeteorAt) {
+    spawnMeteor(width, height);
+    scheduleMeteor(now);
+  }
+
+  const reach = meteorReach(width, height);
+
+  for (let i = meteors.length - 1; i >= 0; i--) {
+    const m = meteors[i]!;
+    const fromX = m.x;
+    const fromY = m.y;
+    m.x += m.vx * dt;
+    m.y += m.vy * dt;
+    m.age += dt;
+
+    for (const star of stars) {
+      if (star.retiring || m.struck.has(star)) continue;
+      // Against the whole segment travelled this frame, not just the new
+      // position --- see distanceToSegment.
+      const dist = distanceToSegment(star.x, star.y, fromX, fromY, m.x, m.y);
+      if (dist > reach) continue;
+
+      m.struck.add(star);
+      if (now - star.lastChimeAt < 140) continue;
+      star.lastChimeAt = now;
+
+      // A graze rings quieter than a direct hit, so the meteor has dynamics: a
+      // dense constellation is struck harder than a stray star clipped in
+      // passing.
+      const strength = 0.3 + 0.7 * (1 - dist / reach);
+      pluck(star.baseFreq, strength);
+      star.glow = Math.max(star.glow, 0.9 * strength);
+      ripples.push({
+        x: star.x,
+        y: star.y,
+        hue: star.hue,
+        age: 0,
+        strength: 0.3 + strength * 0.45,
+      });
+    }
+
+    const gone =
+      m.x < -margin(width) ||
+      m.x > width + margin(width) ||
+      m.y < -margin(height) ||
+      m.y > height + margin(height);
+    if (gone || m.age > 12) meteors.splice(i, 1);
+  }
+}
+
+function margin(extent: number): number {
+  return Math.max(200, extent * 0.25);
 }
 
 // --- background ------------------------------------------------------------
@@ -472,6 +608,8 @@ function step(width: number, height: number, dt: number): void {
     }
   }
 
+  updateMeteors(width, height, dt, now);
+
   for (let i = ripples.length - 1; i >= 0; i--) {
     const r = ripples[i]!;
     r.age += dt;
@@ -548,6 +686,47 @@ function paintRipples(): void {
     ctx!.arc(r.x, r.y, radius, 0, Math.PI * 2);
     ctx!.stroke();
   }
+  ctx!.globalCompositeOperation = "source-over";
+}
+
+function paintMeteors(): void {
+  ctx!.globalCompositeOperation = "lighter";
+  const capWas = ctx!.lineCap;
+  ctx!.lineCap = "round";
+
+  for (const m of meteors) {
+    const speed = Math.hypot(m.vx, m.vy) || 1;
+    // The tail is where it has been, so it's a length of travel rather than a
+    // fixed number of pixels --- a slower meteor draws a shorter streak.
+    const tail = Math.min(210, speed * 0.4);
+    const tailX = m.x - (m.vx / speed) * tail;
+    const tailY = m.y - (m.vy / speed) * tail;
+    // Fades in over its first moments, so it enters the frame rather than
+    // appearing at full brightness on an edge.
+    const arrival = Math.min(1, m.age / 0.22);
+
+    const streak = ctx!.createLinearGradient(m.x, m.y, tailX, tailY);
+    streak.addColorStop(0, `hsla(${m.hue}, 90%, 97%, ${0.85 * arrival})`);
+    streak.addColorStop(0.3, `hsla(${m.hue}, 92%, 84%, ${0.3 * arrival})`);
+    streak.addColorStop(1, "hsla(0, 0%, 0%, 0)");
+    ctx!.strokeStyle = streak;
+    ctx!.lineWidth = 2.4;
+    ctx!.beginPath();
+    ctx!.moveTo(m.x, m.y);
+    ctx!.lineTo(tailX, tailY);
+    ctx!.stroke();
+
+    const head = ctx!.createRadialGradient(m.x, m.y, 0, m.x, m.y, 15);
+    head.addColorStop(0, `hsla(0, 0%, 100%, ${0.95 * arrival})`);
+    head.addColorStop(0.35, `hsla(${m.hue}, 95%, 86%, ${0.34 * arrival})`);
+    head.addColorStop(1, "hsla(0, 0%, 0%, 0)");
+    ctx!.fillStyle = head;
+    ctx!.beginPath();
+    ctx!.arc(m.x, m.y, 15, 0, Math.PI * 2);
+    ctx!.fill();
+  }
+
+  ctx!.lineCap = capWas;
   ctx!.globalCompositeOperation = "source-over";
 }
 
@@ -645,6 +824,7 @@ function frame(now: number): void {
   paintResonance(harmonyDistance(width, height));
   paintRipples();
   paintStars();
+  paintMeteors();
   paintLabels(width);
   requestAnimationFrame(frame);
 }
@@ -705,11 +885,11 @@ window.addEventListener("keydown", (event) => {
 
 resize();
 
-// The sky opens on the real Southern Cross, already adrift and silent until the
-// first gesture. Two things fall out of that for free: it reads as alive rather
-// than empty, and the stars arrive close enough together to start resonating
-// and colliding on their own --- so the instrument shows you what it does
-// before you have placed anything.
+// The sky opens on the real Southern Cross, still and silent until the first
+// gesture. Two things fall out of that for free: it reads as a place rather
+// than an empty canvas, and the stars are close enough together that once
+// unmoored they resonate and collide on their own --- so the instrument shows
+// you what it does before you have placed anything.
 function seedSky(): void {
   const width = canvas!.clientWidth;
   const height = canvas!.clientHeight;

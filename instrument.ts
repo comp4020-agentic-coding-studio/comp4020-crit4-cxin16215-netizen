@@ -90,6 +90,43 @@ export function resonance(dist: number, reach: number): number {
   return closeness * closeness;
 }
 
+// --- meteors ---------------------------------------------------------------
+
+/**
+ * How close a meteor has to pass to sound a star. Much tighter than
+ * `harmonyDistance`: resonance is a whole neighbourhood humming together,
+ * whereas a meteor should pick out the individual stars it actually grazes.
+ */
+export function meteorReach(width: number, height: number): number {
+  return Math.max(34, Math.min(width, height) * 0.06);
+}
+
+/**
+ * Shortest distance from a point to the segment AB.
+ *
+ * A meteor crosses the sky in under two seconds, which is tens of pixels per
+ * frame. Testing only where it *is* would let it step clean over a star
+ * between two frames and sound nothing --- and the faster the display, the
+ * less often that happens, so the bug would come and go by hardware.
+ * Measuring against the segment it travelled removes the frame rate from the
+ * question entirely.
+ */
+export function distanceToSegment(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lengthSq = dx * dx + dy * dy;
+  if (lengthSq === 0) return Math.hypot(px - ax, py - ay);
+  const t = Math.min(1, Math.max(0, ((px - ax) * dx + (py - ay) * dy) / lengthSq));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
 // --- a real sky ------------------------------------------------------------
 //
 // The page opens on Crux, the Southern Cross: the constellation actually

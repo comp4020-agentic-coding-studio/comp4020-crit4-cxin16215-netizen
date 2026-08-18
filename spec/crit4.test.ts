@@ -10,8 +10,10 @@ import {
   brightnessForMagnitude,
   damping,
   degreeForHeight,
+  distanceToSegment,
   harmonyDistance,
   hueForDegree,
+  meteorReach,
   pitchForDegree,
   projectConstellation,
   resonance,
@@ -262,5 +264,57 @@ describe("crit 4: the sky it opens on is really the Southern Cross", () => {
       const placed = projectConstellation(CRUX, width!, height!);
       expect(screenRatio(placed)).toBeCloseTo(skyRatio(0, 2, 3, 4), 1);
     }
+  });
+});
+
+// A meteor sounds the stars it passes. The interesting failure isn't "it made
+// no sound" --- it's that a fast-moving point tested only at its per-frame
+// positions can step straight over a star, so whether the meteor plays anything
+// would depend on the player's refresh rate.
+describe("crit 4: a meteor plays what it passes, at any frame rate", () => {
+  it("measures a star against the whole path travelled, not just the endpoints", () => {
+    const reach = meteorReach(1440, 900);
+    // A star sitting dead on the meteor's line, but far from both ends of the
+    // step it took this frame.
+    const star = { x: 700, y: 400 };
+    const from = { x: 400, y: 400 };
+    const to = { x: 1000, y: 400 };
+
+    const naive = Math.min(
+      Math.hypot(star.x - from.x, star.y - from.y),
+      Math.hypot(star.x - to.x, star.y - to.y),
+    );
+    expect(naive, "the endpoints are both out of reach — this is the case that gets missed").toBeGreaterThan(reach);
+    expect(distanceToSegment(star.x, star.y, from.x, from.y, to.x, to.y)).toBeCloseTo(0);
+  });
+
+  it("clamps to the nearer end for a star the path stops short of", () => {
+    // Directly ahead of the meteor but past where it got to this frame: the
+    // distance is to the end of the segment, not to the infinite line.
+    expect(distanceToSegment(500, 0, 0, 0, 100, 0)).toBeCloseTo(400);
+    expect(distanceToSegment(-70, 0, 0, 0, 100, 0)).toBeCloseTo(70);
+  });
+
+  it("measures perpendicular distance for a star beside the path", () => {
+    expect(distanceToSegment(50, 30, 0, 0, 100, 0)).toBeCloseTo(30);
+  });
+
+  it("survives a frame in which the meteor did not move", () => {
+    expect(distanceToSegment(3, 4, 10, 10, 10, 10)).toBeCloseTo(Math.hypot(7, 6));
+  });
+
+  it("grazes individual stars rather than sweeping the whole neighbourhood", () => {
+    for (const [width, height] of [
+      [390, 844],
+      [1920, 1080],
+    ]) {
+      const reach = meteorReach(width!, height!);
+      expect(
+        reach,
+        "a meteor reach as wide as resonance would ring every star on screen at once",
+      ).toBeLessThan(harmonyDistance(width!, height!));
+      expect(reach).toBeGreaterThan(0);
+    }
+    expect(meteorReach(1920, 1080)).toBeGreaterThan(meteorReach(390, 844));
   });
 });
