@@ -29,6 +29,7 @@ import {
 const canvas = document.querySelector<HTMLCanvasElement>("#sky");
 const invite = document.querySelector<HTMLElement>("#invite");
 const catalogueList = document.querySelector<HTMLElement>("#catalogue");
+const headerEl = document.querySelector<HTMLElement>("header");
 if (!canvas) throw new Error("missing #sky canvas");
 const ctx = canvas.getContext("2d");
 if (!ctx) throw new Error("2d context unavailable");
@@ -242,6 +243,15 @@ let awake = false;
 const METEOR_GAP_MS = 11_000;
 const METEOR_JITTER_MS = 15_000;
 let nextMeteorAt = Number.POSITIVE_INFINITY;
+let meteorHerald: { x: number; y: number; age: number; hue: number } | null = null;
+const HERALD_DURATION = 0.45;
+
+// The herald has to *precede* the streak to be a warning at all --- fire both at
+// once, as the first attempt did, and it's a decoration on an arrival rather than
+// a hint of one. Lead by most of the glow's life, so it is nearly spent by the
+// time the meteor breaks the edge and the two read as one event.
+const HERALD_LEAD_MS = 320;
+let pendingMeteor: { meteor: Meteor; releaseAt: number } | null = null;
 
 function scheduleMeteor(now: number, gap = METEOR_GAP_MS): void {
   // Reduced motion means fewer sudden crossings, not none.
@@ -280,7 +290,7 @@ function makeStar(
     name: real?.proper ? real.name : null,
     brightness,
     twinkle: Math.random() * Math.PI * 2,
-    glow: 0,
+    glow: real ? 0 : 0.6,
     level: 0,
     retiring: false,
     lastChimeAt: 0,
@@ -329,6 +339,7 @@ function spawn(x: number, y: number, vx: number, vy: number): void {
   if (awake) star.voice = createVoice(star);
   rebalance();
   invite?.classList.add("is-gone");
+  headerEl?.classList.add("is-faded");
 }
 
 /**
@@ -360,7 +371,14 @@ function wake(): void {
 
 // --- meteors ---------------------------------------------------------------
 
-function spawnMeteor(width: number, height: number): void {
+/**
+ * Works out a whole crossing without starting it, and says where on the edge it
+ * will appear, so the herald can be lit ahead of the streak it announces.
+ */
+function prepareMeteor(
+  width: number,
+  height: number,
+): { meteor: Meteor; heraldX: number; heraldY: number } {
   const living = stars.filter((s) => !s.retiring);
 
   // Aimed loosely through the middle of whatever is currently up there. Left to
@@ -377,18 +395,18 @@ function spawnMeteor(width: number, height: number): void {
 
   // In from off one side, and from the upper part of the sky --- which is where
   // they come from, and it keeps the streak clear of the invitation.
-  const margin = 120;
+  const offscreen = 120;
   const fromLeft = Math.random() < 0.5;
-  const startX = fromLeft ? -margin : width + margin;
+  const startX = fromLeft ? -offscreen : width + offscreen;
   const startY = Math.random() * height * 0.5;
 
   const dx = aimX - startX;
   const dy = aimY - startY;
   const length = Math.hypot(dx, dy) || 1;
   const seconds = (calmMotion ? 3.6 : 1.5) + Math.random() * 0.6;
-  const speed = (Math.hypot(width, height) + margin * 2) / seconds;
+  const speed = (Math.hypot(width, height) + offscreen * 2) / seconds;
 
-  meteors.push({
+  const meteor: Meteor = {
     x: startX,
     y: startY,
     vx: (dx / length) * speed,
@@ -396,14 +414,37 @@ function spawnMeteor(width: number, height: number): void {
     hue: 196 + Math.random() * 26,
     age: 0,
     struck: new Set(),
-  });
+  };
+
+  // Where it will actually break the edge --- not its off-screen start height.
+  // It travels diagonally, so over the `offscreen` run-up it can drift far
+  // enough in y that a herald placed at startY flashes visibly wide of the
+  // streak that follows it.
+  const timeToEdge = offscreen / Math.max(1, Math.abs(meteor.vx));
+  return {
+    meteor,
+    heraldX: fromLeft ? 0 : width,
+    heraldY: startY + meteor.vy * timeToEdge,
+  };
 }
 
 function updateMeteors(width: number, height: number, dt: number, now: number): void {
   // One at a time. Two crossing at once stops being an event.
-  if (awake && meteors.length === 0 && now >= nextMeteorAt) {
-    spawnMeteor(width, height);
+  if (awake && !pendingMeteor && meteors.length === 0 && now >= nextMeteorAt) {
+    const { meteor, heraldX, heraldY } = prepareMeteor(width, height);
+    meteorHerald = { x: heraldX, y: heraldY, age: 0, hue: meteor.hue };
+    pendingMeteor = { meteor, releaseAt: now + HERALD_LEAD_MS };
     scheduleMeteor(now);
+  }
+
+  if (pendingMeteor && now >= pendingMeteor.releaseAt) {
+    meteors.push(pendingMeteor.meteor);
+    pendingMeteor = null;
+  }
+
+  if (meteorHerald) {
+    meteorHerald.age += dt;
+    if (meteorHerald.age > HERALD_DURATION) meteorHerald = null;
   }
 
   const reach = meteorReach(width, height);
@@ -516,6 +557,12 @@ function step(width: number, height: number, dt: number): void {
 
     s.twinkle += dt * 1.6;
     s.glow = Math.max(0, s.glow - dt * 1.7);
+    // `level` is the envelope, and nothing but the envelope: a star's fade has
+    // to take the same 1.8s every time so it stays matched to the 0.5s time
+    // constant its voice is fading on. The quickening pulse a retiring star
+    // shows belongs to how it is *drawn* --- fold it in here and it compounds
+    // frame on frame, collapsing the fade to a fifth of a second and cutting
+    // the voice off mid-note.
     s.level = s.retiring
       ? Math.max(0, s.level - dt * 0.55)
       : Math.min(1, s.level + dt * 0.45);
@@ -666,9 +713,16 @@ function paintResonance(reach: number): void {
       const hue = (a.hue + b.hue) / 2;
       ctx!.strokeStyle = `hsla(${hue}, 90%, 76%, ${strength * 0.5})`;
       ctx!.lineWidth = 0.6 + strength * 1.4;
+      const mx = (a.x + b.x) / 2;
+      const my = (a.y + b.y) / 2;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const bulge = Math.min(30, dist * 0.08) * strength;
+      const cx = mx + (-dy / (dist || 1)) * bulge;
+      const cy = my + (dx / (dist || 1)) * bulge;
       ctx!.beginPath();
       ctx!.moveTo(a.x, a.y);
-      ctx!.lineTo(b.x, b.y);
+      ctx!.quadraticCurveTo(cx, cy, b.x, b.y);
       ctx!.stroke();
     }
   }
@@ -686,6 +740,23 @@ function paintRipples(): void {
     ctx!.arc(r.x, r.y, radius, 0, Math.PI * 2);
     ctx!.stroke();
   }
+  ctx!.globalCompositeOperation = "source-over";
+}
+
+function paintMeteorHerald(): void {
+  if (!meteorHerald) return;
+  const h = meteorHerald;
+  const t = h.age / HERALD_DURATION;
+  const alpha = (1 - t) * 0.4;
+  const r = 8 + t * 35;
+  ctx!.globalCompositeOperation = "lighter";
+  const glow = ctx!.createRadialGradient(h.x, h.y, 0, h.x, h.y, r);
+  glow.addColorStop(0, `hsla(${h.hue}, 85%, 92%, ${alpha})`);
+  glow.addColorStop(1, "hsla(0, 0%, 0%, 0)");
+  ctx!.fillStyle = glow;
+  ctx!.beginPath();
+  ctx!.arc(h.x, h.y, r, 0, Math.PI * 2);
+  ctx!.fill();
   ctx!.globalCompositeOperation = "source-over";
 }
 
@@ -765,7 +836,11 @@ function paintStars(): void {
   ctx!.globalCompositeOperation = "lighter";
   for (const s of stars) {
     const breathe = 0.82 + 0.18 * Math.sin(s.twinkle);
-    const bright = s.level * (0.75 + 0.25 * breathe) + s.glow * 0.6;
+    // A star on its way out breathes three times as fast --- the one visual cue
+    // for "ageing" rather than merely dimming. Purely a rendering term, applied
+    // to brightness and never written back to the envelope.
+    const ageing = s.retiring ? 0.7 + 0.3 * Math.sin(s.twinkle * 3) : 1;
+    const bright = (s.level * (0.75 + 0.25 * breathe) + s.glow * 0.6) * ageing;
     const radius = s.radius * breathe * (1 + s.glow * 0.5);
 
     paintFlare(s, bright, radius);
@@ -792,6 +867,46 @@ function paintStars(): void {
     ctx!.arc(s.x, s.y, radius, 0, Math.PI * 2);
     ctx!.fill();
   }
+  ctx!.globalCompositeOperation = "source-over";
+}
+
+/**
+ * A dashed arrow showing where a released star would go, and how fast.
+ *
+ * Length comes from `launchVelocity` --- the very function `pointerup` throws
+ * with --- rather than from how far the pointer has moved. Those are not the
+ * same thing: a slow 300px drag and a 300px flick displace identically and
+ * launch nothing alike, so a displacement-length arrow would promise a force
+ * the release doesn't deliver. Reading the real speed also makes holding still
+ * legible --- keep the pointer down and the arrow shrinks, because the throw
+ * genuinely is dying in your hand.
+ */
+function paintDragPreview(): void {
+  if (!drag || !dragCurrent) return;
+  const dx = dragCurrent.x - drag.x;
+  const dy = dragCurrent.y - drag.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 6) return;
+
+  const { vx, vy } = launchVelocity(drag, dragCurrent, performance.now());
+  const speed = Math.min(MAX_SPEED, Math.hypot(vx, vy));
+  const arrowLen = (speed / MAX_SPEED) * 74;
+  if (arrowLen < 3) return;
+  const tipX = dragCurrent.x + (dx / len) * arrowLen;
+  const tipY = dragCurrent.y + (dy / len) * arrowLen;
+
+  ctx!.globalCompositeOperation = "lighter";
+  const grad = ctx!.createLinearGradient(dragCurrent.x, dragCurrent.y, tipX, tipY);
+  grad.addColorStop(0, "hsla(220, 80%, 85%, 0.35)");
+  grad.addColorStop(1, "hsla(220, 80%, 85%, 0)");
+  ctx!.strokeStyle = grad;
+  ctx!.lineWidth = 1.5;
+  ctx!.setLineDash([4, 6]);
+  ctx!.beginPath();
+  ctx!.moveTo(dragCurrent.x, dragCurrent.y);
+  ctx!.lineTo(tipX, tipY);
+  ctx!.stroke();
+  ctx!.setLineDash([]);
   ctx!.globalCompositeOperation = "source-over";
 }
 
@@ -824,7 +939,9 @@ function frame(now: number): void {
   paintResonance(harmonyDistance(width, height));
   paintRipples();
   paintStars();
+  paintMeteorHerald();
   paintMeteors();
+  paintDragPreview();
   paintLabels(width);
   requestAnimationFrame(frame);
 }
@@ -836,10 +953,31 @@ function frame(now: number): void {
 // on a phone).
 
 let drag: { x: number; y: number; t: number } | null = null;
+let dragCurrent: { x: number; y: number } | null = null;
 
 function localPoint(event: PointerEvent): { x: number; y: number } {
   const rect = canvas!.getBoundingClientRect();
   return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+}
+
+/**
+ * What a star released right now would be thrown with, in pixels per second: the
+ * gesture's own speed and direction, so the throw feels like the hand that made
+ * it. A still tap works out to nothing and leaves the star where it was put.
+ *
+ * One function because the preview and the release have to agree --- if the
+ * arrow is computed any other way it is drawing a promise the throw won't keep.
+ */
+function launchVelocity(
+  from: { x: number; y: number; t: number },
+  to: { x: number; y: number },
+  now: number,
+): { vx: number; vy: number } {
+  const elapsed = Math.max(24, now - from.t);
+  return {
+    vx: ((to.x - from.x) / elapsed) * 1000 * 0.8,
+    vy: ((to.y - from.y) / elapsed) * 1000 * 0.8,
+  };
 }
 
 canvas.addEventListener("pointerdown", (event) => {
@@ -849,21 +987,23 @@ canvas.addEventListener("pointerdown", (event) => {
   canvas!.focus();
 });
 
+canvas.addEventListener("pointermove", (event) => {
+  if (!drag) return;
+  dragCurrent = localPoint(event);
+});
+
 canvas.addEventListener("pointerup", (event) => {
   if (!drag) return;
   const { x, y } = localPoint(event);
-  const elapsed = Math.max(24, performance.now() - drag.t);
-  // A still tap leaves the star where it was put; a flick hands it the gesture's
-  // own speed and direction, in pixels per second, so the throw feels like the
-  // hand that made it.
-  const vx = ((x - drag.x) / elapsed) * 1000 * 0.8;
-  const vy = ((y - drag.y) / elapsed) * 1000 * 0.8;
+  const { vx, vy } = launchVelocity(drag, { x, y }, performance.now());
   spawn(x, y, vx, vy);
   drag = null;
+  dragCurrent = null;
 });
 
 canvas.addEventListener("pointercancel", () => {
   drag = null;
+  dragCurrent = null;
 });
 
 // The number keys make the whole instrument playable with no pointer at all:

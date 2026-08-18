@@ -23,6 +23,21 @@ header {
   gap: 1rem;
   padding: 0.7rem 1rem;
   z-index: 1;
+  transition: opacity 1.8s ease;
+}
+
+header.is-faded {
+  opacity: 0.15;
+}
+
+/* `opacity` fades the whole subtree, focus ring included, so without
+   :focus-within a keyboard visitor tabbing to the link gets an indicator at 15%
+   — technically drawn, practically invisible. Hover alone can't stand in for it:
+   a keyboard has no hover, and neither does a touchscreen. */
+header.is-faded:hover,
+header.is-faded:focus-within {
+  opacity: 0.8;
+  transition-duration: 0.3s;
 }
 
 header a {
@@ -97,11 +112,12 @@ canvas#sky:focus-visible {
   padding-bottom: 9vh;
   text-align: center;
   pointer-events: none;
-  transition: opacity 1.1s ease;
+  transition: opacity 1.1s ease, transform 1.4s ease;
 }
 
 .invite.is-gone {
   opacity: 0;
+  transform: translateY(20px);
 }
 
 .invite-line {
