@@ -279,6 +279,34 @@ green suite easily --- neither the compounding nor the click is visible to any
 check here, and both were found by re-running the expression in a throwaway
 script rather than by reading it.
 
+## Fading an element out and keeping it readable are exclusive
+
+Contrast is computed on what is actually composited, so `opacity` on a container
+of text is a contrast change, not a styling one --- and against a background
+this dark the maths runs out fast. Measured against `#04050f`, for text to clear
+4.5:1 through an opacity fade:
+
+| fade | lightest possible result |
+| ---- | ------------------------ |
+| 0.45 or below | **unreachable — even pure white fails** |
+| 0.55 | needs a base ~65% toward white (brighter than the unfaded design) |
+| 0.70 | needs a base ~30% toward white |
+| 1.00 | the design's own colours, once nudged ~9% |
+
+So "fade this to 15% so it gets out of the way" and "this text meets AA" cannot
+both be true. Pick one on purpose. The header here is the deliberate exception:
+it fades to 0.15 after the first gesture (1.16:1), which is a real failure of
+1.4.3 and is kept because the sky is the artefact --- mitigated, not excused, by
+`:hover` and `:focus-within` restoring it to 0.8, so a keyboard or pointer user
+never meets an invisible control, and by its one link pointing at the page it is
+already on. Reverting is one declaration if that call ever changes.
+
+The general lesson is that a colour chosen by eye lands near the bar often
+enough to be worth measuring rather than guessing: two of this page's three text
+colours looked settled and came in at 3.71:1 and 4.31:1. Note also that the
+axe sensor cannot help --- it disables contrast entirely without a layout
+engine, so a green a11y run says nothing about any of this.
+
 ## This file is yours
 
 This CLAUDE.md is a starting point, not a fixed rulebook. As you learn what your
